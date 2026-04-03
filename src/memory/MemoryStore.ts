@@ -1,143 +1,90 @@
-import { readFile, writeFile, mkdir } from 'fs/promises'
-import { dirname } from 'path'
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises'
+import { join } from 'path'
 
-// ─── Types ───────────────────────────────────────────────────────────────────
-
-export interface MemoryEntry {
-  key: string
-  value: string
-  scope: string
-  createdAt: string
-  updatedAt: string
-  /** Unix timestamp (ms) after which this entry is considered expired */
-  expiresAt?: number
+function todayStr(): string {
+  return new Date().toISOString().slice(0, 10) // YYYY-MM-DD
 }
 
 /**
- * Scope format:
- *   bot:<botId>          — per-bot global memory
- *   chat:<chatId>        — per-conversation memory
- *   user:<userId>        — per-user memory across all chats
- *   global               — shared across all bots
+ * Markdown daily-note memory for a bot.
+ *
+ * Storage: agents/{botId}/memory/
+ *   YYYY-MM-DD.md  — one file per day
+ *
+ * "Current record"  = today's file (in-memory, flushed on save)
+ * "Historical records" = older dated files (read-only at load time)
  */
-export type MemoryScope = `bot:${string}` | `chat:${string}` | `user:${string}` | 'global'
-
-// ─── MemoryStore ─────────────────────────────────────────────────────────────
-
 export class MemoryStore {
-  private data = new Map<string, MemoryEntry>()
+  private dir = ''
+  private _today = ''
+  private _todayContent = ''
 
-  private scopeKey(scope: string, key: string): string {
-    return `${scope}::${key}`
-  }
+  /** Load today's note from the given directory. Creates dir if missing. */
+  async load(dir: string): Promise<void> {
+    this.dir = dir
+    this._today = todayStr()
+    await mkdir(dir, { recursive: true })
 
-  /** Store a memory entry. Pass ttlSeconds to auto-expire it. */
-  set(scope: MemoryScope, key: string, value: string, ttlSeconds?: number): void {
-    const now = new Date().toISOString()
-    const existing = this.data.get(this.scopeKey(scope, key))
-    const entry: MemoryEntry = {
-      key,
-      value,
-      scope,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-      expiresAt: ttlSeconds ? Date.now() + ttlSeconds * 1000 : undefined,
-    }
-    this.data.set(this.scopeKey(scope, key), entry)
-  }
-
-  /** Retrieve a memory value, returns null if missing or expired. */
-  get(scope: MemoryScope, key: string): string | null {
-    const entry = this.data.get(this.scopeKey(scope, key))
-    if (!entry) return null
-    if (entry.expiresAt && Date.now() > entry.expiresAt) {
-      this.data.delete(this.scopeKey(scope, key))
-      return null
-    }
-    return entry.value
-  }
-
-  /** Delete a specific memory entry. */
-  delete(scope: MemoryScope, key: string): boolean {
-    return this.data.delete(this.scopeKey(scope, key))
-  }
-
-  /** List all non-expired entries within a scope. */
-  list(scope: MemoryScope): MemoryEntry[] {
-    const now = Date.now()
-    const results: MemoryEntry[] = []
-    for (const entry of this.data.values()) {
-      if (entry.scope !== scope) continue
-      if (entry.expiresAt && now > entry.expiresAt) {
-        this.data.delete(this.scopeKey(scope, entry.key))
-        continue
-      }
-      results.push(entry)
-    }
-    return results
-  }
-
-  /** Search entries by value substring across all scopes. */
-  search(query: string): MemoryEntry[] {
-    const now = Date.now()
-    const q = query.toLowerCase()
-    const results: MemoryEntry[] = []
-    for (const entry of this.data.values()) {
-      if (entry.expiresAt && now > entry.expiresAt) continue
-      if (entry.value.toLowerCase().includes(q) || entry.key.toLowerCase().includes(q)) {
-        results.push(entry)
-      }
-    }
-    return results
-  }
-
-  /** Remove all entries for a scope. */
-  clear(scope: MemoryScope): void {
-    for (const [compoundKey, entry] of this.data.entries()) {
-      if (entry.scope === scope) this.data.delete(compoundKey)
-    }
-  }
-
-  /** Purge all expired entries. */
-  evictExpired(): number {
-    const now = Date.now()
-    let count = 0
-    for (const [key, entry] of this.data.entries()) {
-      if (entry.expiresAt && now > entry.expiresAt) {
-        this.data.delete(key)
-        count++
-      }
-    }
-    return count
-  }
-
-  /** Persist all entries to a JSON file. */
-  async save(path: string): Promise<void> {
-    await mkdir(dirname(path), { recursive: true })
-    const entries = Array.from(this.data.values())
-    await writeFile(path, JSON.stringify(entries, null, 2), 'utf8')
-  }
-
-  /** Load entries from a JSON file (merges into existing data). */
-  async load(path: string): Promise<void> {
     try {
-      const raw = await readFile(path, 'utf8')
-      const entries = JSON.parse(raw) as MemoryEntry[]
-      const now = Date.now()
-      for (const entry of entries) {
-        if (entry.expiresAt && now > entry.expiresAt) continue
-        this.data.set(this.scopeKey(entry.scope, entry.key), entry)
-      }
+      this._todayContent = await readFile(join(dir, `${this._today}.md`), 'utf8')
     } catch {
-      // File not found or invalid — start empty
+      this._todayContent = `# ${this._today}\n`
     }
   }
 
-  stats(): { total: number; scopes: Record<string, number> } {
-    const scopes: Record<string, number> = {}
-    for (const entry of this.data.values()) {
-      scopes[entry.scope] = (scopes[entry.scope] ?? 0) + 1
+  /** Append a timestamped note to today's in-memory content. */
+  append(text: string): void {
+    const time = new Date().toISOString().slice(11, 19) // HH:MM:SS
+    this._todayContent += `\n## ${time}\n\n${text.trim()}\n`
+  }
+
+  /** Flush today's content to disk. */
+  async save(): Promise<void> {
+    if (!this.dir) return
+    await writeFile(join(this.dir, `${this._today}.md`), this._todayContent, 'utf8')
+  }
+
+  /** Return today's in-memory note content. */
+  today(): string {
+    return this._todayContent
+  }
+
+  /**
+   * Read the most recent N historical days (excluding today), sorted ascending.
+   * Returns concatenated markdown sections separated by horizontal rules.
+   */
+  async recent(days: number): Promise<string> {
+    if (!this.dir) return ''
+
+    let files: string[] = []
+    try {
+      files = await readdir(this.dir)
+    } catch {
+      return ''
     }
-    return { total: this.data.size, scopes }
+
+    const historical = files
+      .filter((f) => /^\d{4}-\d{2}-\d{2}\.md$/.test(f) && f !== `${this._today}.md`)
+      .sort()
+      .slice(-days)
+
+    const sections: string[] = []
+    for (const filename of historical) {
+      try {
+        const content = await readFile(join(this.dir, filename), 'utf8')
+        if (content.trim()) sections.push(content.trim())
+      } catch {
+        // unreadable — skip
+      }
+    }
+    return sections.join('\n\n---\n\n')
+  }
+
+  stats(): { dir: string; date: string; lines: number } {
+    return {
+      dir: this.dir,
+      date: this._today,
+      lines: this._todayContent.split('\n').length,
+    }
   }
 }

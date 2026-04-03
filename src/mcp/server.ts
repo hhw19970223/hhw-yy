@@ -8,6 +8,10 @@ import { getHistoryTool } from './tools/getHistory.js'
 import { startBotTool } from './tools/startBot.js'
 import { stopBotTool } from './tools/stopBot.js'
 import { getBotConfigTool } from './tools/getBotConfig.js'
+import { workspaceListTool } from './tools/workspaceList.js'
+import { workspaceReadTool } from './tools/workspaceRead.js'
+import { workspaceWriteTool } from './tools/workspaceWrite.js'
+import { workspaceDeleteTool } from './tools/workspaceDelete.js'
 
 type ToolDefinition = {
   name: string
@@ -36,6 +40,10 @@ export function startMcpServer(manager: Manager): Server {
     startBotTool(manager),
     stopBotTool(manager),
     getBotConfigTool(manager),
+    workspaceListTool(),
+    workspaceReadTool(),
+    workspaceWriteTool(),
+    workspaceDeleteTool(),
   ]
 
   const toolMap = new Map(tools.map((t) => [t.name, t]))

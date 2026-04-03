@@ -42,7 +42,6 @@ export function getBotConfigTool(manager: Manager) {
         },
         claude: {
           model: config.claude.model,
-          systemPrompt: config.claude.systemPrompt,
           maxTokens: config.claude.maxTokens,
           historyLimit: config.claude.historyLimit,
           apiKeySource: config.claude.apiKey ? 'config' : process.env.ANTHROPIC_API_KEY ? 'environment' : 'missing',

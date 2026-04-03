@@ -16,7 +16,6 @@
         "apiKey": "sk-ant-YOUR_API_KEY",
         "baseUrl": "https://api.anthropic.com",
         "model": "claude-opus-4-6",
-        "systemPrompt": "你是主控助手，负责协调和管理各子助手。",
         "maxTokens": 2048,
         "historyLimit": 20
       },
@@ -46,7 +45,6 @@
             "apiKey": "sk-ant-YOUR_API_KEY",
             "baseUrl": "https://api.anthropic.com",
             "model": "claude-sonnet-4-6",
-            "systemPrompt": "你是一个专业、友好的助手，请用简洁的语言回答问题。",
             "maxTokens": 2048,
             "historyLimit": 20
           },

@@ -10,10 +10,15 @@
  * back to the Gateway via FEISHU_SEND / FEISHU_REACTION_* IPC messages.
  */
 import { readFile } from 'fs/promises'
-import { join } from 'path'
+import * as lark from '@larksuiteoapi/node-sdk'
 import { RootConfigSchema, type LoadedSubAgentConfig } from '../config/schema.js'
+import { loadAgentPrompt } from '../config/agentPrompt.js'
+import { initWorkspace } from '../workspace/WorkspaceInit.js'
 import { IpcSender } from '../feishu/IpcSender.js'
 import { ClaudeClient } from '../llm/ClaudeClient.js'
+import { ToolRegistry } from '../tools/ToolRegistry.js'
+import { createDelegateTools } from '../tools/feishu/delegate.js'
+import { createBitableTools } from '../tools/feishu/bitable.js'
 import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
@@ -93,26 +98,51 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
+  // Initialize full workspace structure (idempotent)
+  // - agents/{botId}/: IDENTITY.md, SOUL.md, AGENTS.md, TOOLS.md, memory/
+  // - workspace/{botId}/: bot private working directory
+  // - workspace/common/: shared workspace with README
+  await initWorkspace(botId)
+
+  // Load system prompt from agents/{botId}/ markdown files
+  const systemPrompt = await loadAgentPrompt(botId)
+
   // Initialize components
   const sender = new IpcSender(ipcSend)
+
+  // Delegation tools are always available — agents need to be able to collaborate
+  const tools = new ToolRegistry()
+  for (const def of createDelegateTools(botId, ipcSend)) tools.register(def)
+
+  // Bitable tools are opt-in via behavior.enableTools
+  if (config.behavior.enableTools) {
+    const larkClient = new lark.Client({
+      appId: config.feishu.appId,
+      appSecret: config.feishu.appSecret,
+    })
+    for (const def of createBitableTools(larkClient)) tools.register(def)
+  }
+
   const claude = new ClaudeClient({
     apiKey,
     baseUrl: config.claude.baseUrl,
     model: config.claude.model,
-    systemPrompt: config.claude.systemPrompt,
+    systemPrompt,
     maxTokens: config.claude.maxTokens,
+    tools,
   })
 
   const persistPath = config.behavior.persistHistory
     ? (chatId: string) => Paths.conversationFile(botId, chatId)
     : undefined
   const store = new ConversationStore(config.claude.historyLimit, persistPath)
-  const handler = new MessageHandler(botId, config, claude, store, sender, ipcSend)
 
-  // Memory — persisted to memory/{botId}/store.json relative to cwd
-  const memoryFile = join(process.cwd(), 'memory', botId, 'store.json')
+  // Memory — markdown daily notes in agents/{botId}/memory/
   const memory = new MemoryStore()
-  await memory.load(memoryFile)
+  await memory.load(Paths.agentMemoryDir(botId))
+
+  const handler = new MessageHandler(botId, config, claude, store, sender, ipcSend, memory)
+
 
   // Error log to same dir as main process
   setProcessLabel(`worker:${botId}`)
@@ -131,8 +161,7 @@ async function main(): Promise<void> {
       lastMessageAt: null,
       restartCount: 0,
     })
-    memory.evictExpired()
-    memory.save(memoryFile).catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
+    memory.save().catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
   }, 30_000)
 
   // ─── IPC message handler ──────────────────────────────────────────────────
@@ -144,12 +173,18 @@ async function main(): Promise<void> {
         break
 
       case 'STOP':
-        void gracefulShutdown(statusInterval, memory, memoryFile)
+        void gracefulShutdown(statusInterval, memory)
         break
 
       case 'FEISHU_MESSAGE':
         handler.handle(msg.message).catch((err) => {
           logger.error(`Unhandled error in message handler: ${err}`, botId)
+        })
+        break
+
+      case 'DELEGATE_MESSAGE':
+        handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text).catch((err) => {
+          logger.error(`Unhandled error in delegated message handler: ${err}`, botId)
         })
         break
 
@@ -168,8 +203,8 @@ async function main(): Promise<void> {
   })
 
   // ─── Signal handling ──────────────────────────────────────────────────────
-  process.on('SIGTERM', () => void gracefulShutdown(statusInterval, memory, memoryFile))
-  process.on('SIGINT',  () => void gracefulShutdown(statusInterval, memory, memoryFile))
+  process.on('SIGTERM', () => void gracefulShutdown(statusInterval, memory))
+  process.on('SIGINT',  () => void gracefulShutdown(statusInterval, memory))
 
   // ─── Unhandled rejection guard ────────────────────────────────────────────
   process.on('unhandledRejection', (reason) => {
@@ -181,10 +216,9 @@ async function main(): Promise<void> {
 async function gracefulShutdown(
   statusInterval: NodeJS.Timeout,
   memory: MemoryStore,
-  memoryFile: string,
 ): Promise<void> {
   clearInterval(statusInterval)
-  await memory.save(memoryFile).catch(() => undefined)
+  await memory.save().catch(() => undefined)
   process.exit(0)
 }
 

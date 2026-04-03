@@ -363,6 +363,22 @@ export class Manager {
             .catch((err) => logger.error(`Gateway removeReaction failed: ${err}`, handle.botId))
         }
         break
+
+      case 'DELEGATE_TO': {
+        const targetHandle = this.bots.get(msg.targetBotId)
+        if (targetHandle?.process && targetHandle.status === BotStatus.READY) {
+          sendToChild(targetHandle.process, {
+            type: 'DELEGATE_MESSAGE',
+            chatId: msg.chatId,
+            fromBotId: msg.fromBotId,
+            text: msg.text,
+          })
+          logger.info(`Delegated → ${msg.targetBotId} in chat ${msg.chatId}`, handle.botId)
+        } else {
+          logger.warn(`Delegation target "${msg.targetBotId}" not found or not ready`, handle.botId)
+        }
+        break
+      }
     }
   }
 

@@ -14,7 +14,6 @@ const ClaudeConfigSchema = z
     apiKey: z.string().optional(),
     baseUrl: z.string().url().optional(),
     model: z.string().default('claude-opus-4-6'),
-    systemPrompt: z.string().default('You are a helpful assistant.'),
     maxTokens: z.number().int().positive().default(2048),
     historyLimit: z.number().int().positive().default(20),
   })
@@ -38,6 +37,11 @@ const BehaviorConfigSchema = z
     chunkSize: z.number().int().positive().default(4000),
     typingIndicator: z.boolean().default(true),
     persistHistory: z.boolean().default(false),
+    injectWorkspaceContext: z.boolean().default(true),
+    /** Enable agentic tool use (Feishu Bitable CRUD tools) */
+    enableTools: z.boolean().default(false),
+    /** After each reply, run a lightweight Claude call to extract memorable facts into daily notes */
+    memoryExtraction: z.boolean().default(false),
   })
   .default({})
 

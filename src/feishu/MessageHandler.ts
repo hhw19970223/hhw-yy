@@ -1,10 +1,12 @@
 import type { FeishuMessage, MentionInfo } from './FeishuClient.js'
 import { ClaudeClient } from '../llm/ClaudeClient.js'
 import { ConversationStore } from '../session/ConversationStore.js'
+import { MemoryStore } from '../memory/MemoryStore.js'
 import type { FeishuSender } from './reply/Sender.js'
 import { logger } from '../shared/logger.js'
 import type { LoadedSubAgentConfig } from '../config/schema.js'
 import type { UpwardMessage } from '../process/ipc/types.js'
+import { buildWorkspaceContext } from '../workspace/WorkspaceManager.js'
 
 export type IpcSend = (msg: UpwardMessage) => void
 
@@ -20,6 +22,7 @@ export class MessageHandler {
     private readonly store: ConversationStore,
     private readonly sender: FeishuSender,
     private readonly ipcSend: IpcSend,
+    private readonly memory?: MemoryStore,
   ) {}
 
   setBotOpenId(openId: string): void {
@@ -72,12 +75,21 @@ export class MessageHandler {
       // msg.text is already clean (mention keys stripped by FeishuClient)
       const history = this.store.get(msg.chatId)
 
+      // Stage 5a: Build system context — session info + workspace files
+      // chat_id is always injected so agents can use it in delegate_to_agent calls
+      let extraSystemContext =
+        `<current_session>\nchat_id: ${msg.chatId}\nsender_user_id: ${msg.senderId}\n</current_session>`
+      if (this.config.behavior.injectWorkspaceContext) {
+        const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
+        if (workspaceCtx) extraSystemContext += '\n\n' + workspaceCtx
+      }
+
       // Stage 6: Call Claude (streaming — accumulate deltas, same UX as before but
       // memory-efficient and unblocks retry logic per delta batch)
       let reply = ''
       const { tokensUsed } = await this.claude.chatStream(history, msg.text, (chunk) => {
         reply += chunk
-      })
+      }, 0, extraSystemContext)
 
       // Stage 7: Update conversation store + reply
       this.store.append(msg.chatId, msg.text, reply)
@@ -103,6 +115,20 @@ export class MessageHandler {
       })
 
       logger.info(`Replied in ${elapsedMs}ms, ${tokensUsed} tokens`, this.botId)
+
+      // Stage 8: Memory extraction (fire-and-forget, inspired by claude-code's
+      // post-sampling SessionMemory hook and openclaw's daily-note convention)
+      if (this.config.behavior.memoryExtraction && this.memory) {
+        this.claude
+          .extractMemory(msg.text, reply)
+          .then((extracted) => {
+            if (extracted && this.memory) {
+              this.memory.append(extracted)
+              return this.memory.save()
+            }
+          })
+          .catch(() => undefined)
+      }
     } catch (err) {
       logger.error(`Failed to handle message: ${err}`, this.botId)
       this.ipcSend({
@@ -115,6 +141,36 @@ export class MessageHandler {
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
     }
+  }
+
+  /**
+   * Handle a task delegated from another agent.
+   * Uses the full streaming + tools + workspace-context pipeline, then sends
+   * the reply directly to the Feishu chat (no syntheticMsgId round-trip needed).
+   */
+  async handleDelegated(chatId: string, fromBotId: string, text: string): Promise<void> {
+    const history = this.store.get(chatId)
+
+    let extraCtx =
+      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\n</current_session>`
+    if (this.config.behavior.injectWorkspaceContext) {
+      const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
+      if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
+    }
+
+    let reply = ''
+    const { tokensUsed } = await this.claude.chatStream(
+      history,
+      text,
+      (chunk) => { reply += chunk },
+      0,
+      extraCtx,
+    )
+
+    this.store.append(chatId, text, reply)
+    await this.sender.sendText(chatId, null, reply)
+
+    logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
   }
 
   async handleInjected(chatId: string, userId: string, text: string, syntheticMsgId: string): Promise<void> {
