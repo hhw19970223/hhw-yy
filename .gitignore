@@ -1,0 +1,22 @@
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Runtime data
+*.pid
+*.log
+error/
+memory/
+
+# Environment
+.env
+.env.*
+
+# Config (contains secrets — use config.example.json as template)
+config.json
+
+# OS
+.DS_Store
+Thumbs.db

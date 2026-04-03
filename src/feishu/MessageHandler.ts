@@ -1,0 +1,199 @@
+import type { FeishuMessage, MentionInfo } from './FeishuClient.js'
+import { ClaudeClient } from '../llm/ClaudeClient.js'
+import { ConversationStore } from '../session/ConversationStore.js'
+import type { FeishuSender } from './reply/Sender.js'
+import { logger } from '../shared/logger.js'
+import type { LoadedSubAgentConfig } from '../config/schema.js'
+import type { UpwardMessage } from '../process/ipc/types.js'
+
+export type IpcSend = (msg: UpwardMessage) => void
+
+const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'post'])
+
+export class MessageHandler {
+  private botOpenId: string | null = null
+
+  constructor(
+    private readonly botId: string,
+    private readonly config: LoadedSubAgentConfig,
+    private readonly claude: ClaudeClient,
+    private readonly store: ConversationStore,
+    private readonly sender: FeishuSender,
+    private readonly ipcSend: IpcSend,
+  ) {}
+
+  setBotOpenId(openId: string): void {
+    this.botOpenId = openId
+  }
+
+  async handle(msg: FeishuMessage): Promise<void> {
+    // Stage 1: Message type filter
+    if (!SUPPORTED_MESSAGE_TYPES.has(msg.messageType)) return
+
+    // Stage 2: Policy gate (includes @mention check)
+    const gateResult = this.checkGate(msg)
+    if (!gateResult.allowed) {
+      if (gateResult.reason) logger.debug(gateResult.reason, this.botId)
+      return
+    }
+
+    // Stage 3: Self-message filter
+    if (this.botOpenId && msg.senderId === this.botOpenId) return
+
+    // Log incoming message
+    const mentionStr = msg.mentions.length
+      ? ` mentions=[${msg.mentions.map((m) => m.name).join(', ')}]`
+      : ''
+    logger.info(
+      `Incoming ${msg.chatType} message | from=${msg.senderId}${mentionStr} | text="${msg.text}"`,
+      this.botId,
+    )
+
+    const startTime = Date.now()
+
+    this.ipcSend({
+      type: 'MESSAGE_RECEIVED',
+      botId: this.botId,
+      chatId: msg.chatId,
+      userId: msg.senderId,
+      messageId: msg.messageId,
+      textPreview: msg.text.slice(0, 100),
+    })
+
+    // Stage 4: Typing indicator
+    if (this.config.behavior.typingIndicator) {
+      const reactions = ['PROUD', 'WITTY', 'SMART', 'SCOWL', 'ERROR']
+      const reaction = reactions[Math.floor(Math.random() * reactions.length)]!
+      await this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
+    }
+
+    try {
+      // Stage 5: Build Claude input
+      // msg.text is already clean (mention keys stripped by FeishuClient)
+      const history = this.store.get(msg.chatId)
+
+      // Stage 6: Call Claude (streaming — accumulate deltas, same UX as before but
+      // memory-efficient and unblocks retry logic per delta batch)
+      let reply = ''
+      const { tokensUsed } = await this.claude.chatStream(history, msg.text, (chunk) => {
+        reply += chunk
+      })
+
+      // Stage 7: Update conversation store + reply
+      this.store.append(msg.chatId, msg.text, reply)
+
+      // Stage 7a: Auto-compact when history is nearing capacity (fire-and-forget)
+      // Inspired by claude-code SessionMemory post-sampling compaction pattern
+      this.store
+        .compactIfNeeded(msg.chatId, (turns) => this.claude.summarize(turns))
+        .catch(() => undefined)
+
+      // Reply threads to the original message so Feishu notifies the sender
+      const replyId = await this.sender.sendText(msg.chatId, msg.messageId, reply)
+
+      const elapsedMs = Date.now() - startTime
+      this.ipcSend({
+        type: 'REPLY_SENT',
+        botId: this.botId,
+        chatId: msg.chatId,
+        messageId: msg.messageId,
+        replyId,
+        tokensUsed,
+        elapsedMs,
+      })
+
+      logger.info(`Replied in ${elapsedMs}ms, ${tokensUsed} tokens`, this.botId)
+    } catch (err) {
+      logger.error(`Failed to handle message: ${err}`, this.botId)
+      this.ipcSend({
+        type: 'ERROR',
+        botId: this.botId,
+        code: 'HANDLE_ERROR',
+        message: String(err),
+      })
+      await this.sender
+        .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
+        .catch(() => undefined)
+    }
+  }
+
+  async handleInjected(chatId: string, userId: string, text: string, syntheticMsgId: string): Promise<void> {
+    const history = this.store.get(chatId)
+    const { text: reply, tokensUsed } = await this.claude.chat(history, text)
+    this.store.append(chatId, text, reply)
+
+    this.ipcSend({
+      type: 'INJECT_REPLY',
+      botId: this.botId,
+      syntheticMsgId,
+      replyText: reply,
+    })
+
+    logger.info(`Inject reply sent, ${tokensUsed} tokens`, this.botId)
+    void userId
+  }
+
+  // ─── Gate ────────────────────────────────────────────────────────────────
+
+  private checkGate(msg: FeishuMessage): { allowed: boolean; reason?: string } {
+    const { access } = this.config
+    const isDM = msg.chatType === 'p2p'
+    const isGroup = msg.chatType === 'group'
+
+    // ── DM policy ──────────────────────────────────────────────────────────
+    if (isDM) {
+      if (access.dmPolicy === 'disabled') {
+        return { allowed: false, reason: `DM disabled for bot ${this.botId}` }
+      }
+      if (access.dmPolicy === 'allowlist' && !access.allowFrom.includes(msg.senderId)) {
+        return { allowed: false, reason: `DM sender ${msg.senderId} not in allowlist` }
+      }
+    }
+
+    // ── Group policy ───────────────────────────────────────────────────────
+    if (isGroup) {
+      if (access.groupPolicy === 'disabled') {
+        return { allowed: false, reason: `Group messages disabled for bot ${this.botId}` }
+      }
+
+      if (access.groupPolicy === 'allowlist') {
+        const allowed =
+          access.allowFrom.includes(msg.chatId) || access.allowFrom.includes(msg.senderId)
+        if (!allowed) {
+          return { allowed: false, reason: `Group/sender not in allowlist` }
+        }
+      }
+
+      // @mention gate: only respond when bot is explicitly @mentioned
+      if (access.requireMention) {
+        if (!this.botOpenId) {
+          // Can't verify @mention without knowing our own open_id — block to avoid broadcast
+          return {
+            allowed: false,
+            reason: `requireMention is enabled but bot open_id is unknown — blocking until open_id resolves`,
+          }
+        } else {
+          const botDirectlyMentioned = msg.mentions.some(
+            (m: MentionInfo) => m.openId === this.botOpenId && !m.isAll,
+          )
+          const allMentioned = msg.mentions.some((m: MentionInfo) => m.isAll)
+          const passViaAll = allMentioned && access.respondToMentionAll
+
+          if (!botDirectlyMentioned && !passViaAll) {
+            return {
+              allowed: false,
+              reason: `Bot not @mentioned in group ${msg.chatId} (requireMention=true)`,
+            }
+          }
+        }
+      }
+    }
+
+    // ── Deny list (applies to all chat types) ──────────────────────────────
+    if (access.denyFrom.includes(msg.senderId)) {
+      return { allowed: false, reason: `Sender ${msg.senderId} in denyFrom list` }
+    }
+
+    return { allowed: true }
+  }
+}
