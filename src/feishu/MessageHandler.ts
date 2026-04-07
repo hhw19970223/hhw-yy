@@ -198,7 +198,7 @@ export class MessageHandler {
    * Uses the full streaming + tools + workspace-context pipeline, then sends
    * the reply directly to the Feishu chat (no syntheticMsgId round-trip needed).
    */
-  async handleDelegated(chatId: string, fromBotId: string, text: string, replyToMessageId?: string): Promise<void> {
+  async handleDelegated(chatId: string, fromBotId: string, text: string, replyToMessageId?: string, delegationId?: string): Promise<void> {
     // Acknowledge receipt of delegation with a random emoji reaction on the original message
     if (replyToMessageId) {
       this.randomReaction(replyToMessageId)
@@ -256,6 +256,11 @@ export class MessageHandler {
     } finally {
       logger.diag(`Heartbeat cleared for delegated chat=${chatId}`, this.botId)
       clearInterval(heartbeat)
+      // Notify the delegating bot to stop its progress-inquiry timer
+      if (delegationId) {
+        this.ipcSend({ type: 'DELEGATE_DONE', fromBotId: this.botId, delegatorBotId: fromBotId, delegationId })
+        logger.diag(`DELEGATE_DONE sent: id=${delegationId} delegator=${fromBotId}`, this.botId)
+      }
     }
   }
 

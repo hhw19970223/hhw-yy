@@ -376,10 +376,23 @@ export class Manager {
             fromBotId: msg.fromBotId,
             text: msg.text,
             replyToMessageId: msg.replyToMessageId,
+            delegationId: msg.delegationId,
           })
           logger.info(`Delegated → ${msg.targetBotId} in chat ${msg.chatId}`, handle.botId)
         } else {
           logger.warn(`Delegation target "${msg.targetBotId}" not found or not ready`, handle.botId)
+        }
+        break
+      }
+
+      case 'DELEGATE_DONE': {
+        const delegatorHandle = this.bots.get(msg.delegatorBotId)
+        if (delegatorHandle?.process) {
+          sendToChild(delegatorHandle.process, {
+            type: 'DELEGATION_COMPLETE',
+            delegationId: msg.delegationId,
+          })
+          logger.diag(`DELEGATE_DONE routed: id=${msg.delegationId} from=${msg.fromBotId} to=${msg.delegatorBotId}`)
         }
         break
       }

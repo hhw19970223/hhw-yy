@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto'
 import { z } from 'zod'
 import type { ToolDef } from '../ToolRegistry.js'
 import type { UpwardMessage } from '../../process/ipc/types.js'
@@ -16,6 +17,7 @@ export function createDelegateTools(
   botId: string,
   ipcSend: (msg: UpwardMessage) => void,
   getCurrentMessageId: () => string | undefined,
+  onDelegate: (delegationId: string, targetBotId: string, chatId: string, replyToMessageId: string | undefined) => void,
 ): ToolDef[] {
   return [
     {
@@ -51,20 +53,28 @@ export function createDelegateTools(
           return JSON.stringify({ error: '不能委托给自己' })
         }
 
+        const delegationId = randomUUID()
+        const replyToMessageId = getCurrentMessageId()
+
         ipcSend({
           type: 'DELEGATE_TO',
           targetBotId: target_bot_id,
           chatId: chat_id,
           fromBotId: botId,
           text: `[来自 ${botId} 的委托]\n\n${message}`,
-          replyToMessageId: getCurrentMessageId(),
+          replyToMessageId,
+          delegationId,
         })
+
+        // Start periodic progress-inquiry timer in the worker
+        onDelegate(delegationId, target_bot_id, chat_id, replyToMessageId)
 
         return JSON.stringify({
           ok: true,
           delegated_to: target_bot_id,
           chat_id,
-          note: '委托已发出，目标 Agent 将在当前飞书会话中直接回复',
+          delegation_id: delegationId,
+          note: '委托已发出，目标 Agent 将在当前飞书会话中直接回复，已启动进度跟踪定时器',
         })
       },
     },

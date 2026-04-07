@@ -13,7 +13,9 @@ export type DownwardMessage =
   /** Gateway → Worker: bot's own open_id, used for self-message + @mention checks */
   | { type: 'SET_BOT_INFO'; botOpenId: string }
   /** Manager → Worker: a task delegated by another agent */
-  | { type: 'DELEGATE_MESSAGE'; chatId: string; fromBotId: string; text: string; replyToMessageId?: string }
+  | { type: 'DELEGATE_MESSAGE'; chatId: string; fromBotId: string; text: string; replyToMessageId?: string; delegationId?: string }
+  /** Manager → Worker: the delegated task has completed — stop the progress-inquiry timer */
+  | { type: 'DELEGATION_COMPLETE'; delegationId: string }
 
 // ─── Child → Manager (Upward) ─────────────────────────────────────────────
 
@@ -49,7 +51,9 @@ export type UpwardMessage =
   /** Worker → Gateway: remove a reaction emoji from a message */
   | { type: 'FEISHU_REACTION_REMOVE'; messageId: string; reactionId: string }
   /** Worker → Manager: delegate a task to another agent's worker */
-  | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string; replyToMessageId?: string }
+  | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string; replyToMessageId?: string; delegationId?: string }
+  /** Worker → Manager: delegated task complete — notify the delegating bot to stop its inquiry timer */
+  | { type: 'DELEGATE_DONE'; fromBotId: string; delegatorBotId: string; delegationId: string }
 
 export function isUpwardMessage(msg: unknown): msg is UpwardMessage {
   return typeof msg === 'object' && msg !== null && 'type' in msg

@@ -123,9 +123,36 @@ async function main(): Promise<void> {
   // delegate_to_agent can pass it through to the receiving agent for reactions.
   let currentMessageId: string | undefined
 
+  // ── Delegation progress-inquiry timers ───────────────────────────────────
+  // When this bot delegates a task, it starts a 2-min timer per delegation.
+  // Each timer sends a status-inquiry DELEGATE_TO message to the target bot.
+  // Cleared when Manager delivers DELEGATION_COMPLETE (target task finished).
+  const delegationTimers = new Map<string, NodeJS.Timeout>()
+
+  function onDelegate(
+    delegationId: string,
+    targetBotId: string,
+    chatId: string,
+    replyToMessageId: string | undefined,
+  ): void {
+    logger.diag(`Delegation timer armed: id=${delegationId} target=${targetBotId}`, botId)
+    const timer = setInterval(() => {
+      logger.diag(`Delegation inquiry firing: id=${delegationId} target=${targetBotId}`, botId)
+      ipcSend({
+        type: 'DELEGATE_TO',
+        targetBotId,
+        chatId,
+        fromBotId: botId,
+        text: `[进度询问] 请简要汇报当前任务进度：已完成什么，遇到什么问题，下一步计划是什么。`,
+        replyToMessageId,
+      })
+    }, 2 * 60_000)
+    delegationTimers.set(delegationId, timer)
+  }
+
   // Delegation tools are always available — agents need to be able to collaborate
   const tools = new ToolRegistry()
-  for (const def of createDelegateTools(botId, ipcSend, () => currentMessageId)) tools.register(def)
+  for (const def of createDelegateTools(botId, ipcSend, () => currentMessageId, onDelegate)) tools.register(def)
   tools.register(createSendMessageTool(ipcSend, () => currentMessageId))
   // Workspace tools — read/write workspace/{botId}/ and workspace/common/
   for (const def of createWorkspaceTools(botId)) tools.register(def)
@@ -218,8 +245,18 @@ async function main(): Promise<void> {
         break
 
       case 'DELEGATE_MESSAGE':
-        enqueue(msg.chatId, () => handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text, msg.replyToMessageId))
+        enqueue(msg.chatId, () => handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text, msg.replyToMessageId, msg.delegationId))
         break
+
+      case 'DELEGATION_COMPLETE': {
+        const timer = delegationTimers.get(msg.delegationId)
+        if (timer) {
+          clearInterval(timer)
+          delegationTimers.delete(msg.delegationId)
+          logger.diag(`Delegation timer cleared: id=${msg.delegationId}`, botId)
+        }
+        break
+      }
 
       case 'SET_BOT_INFO':
         handler.setBotOpenId(msg.botOpenId)
