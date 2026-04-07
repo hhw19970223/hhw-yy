@@ -35,6 +35,12 @@ export class MessageHandler {
    */
   acknowledge(msg: FeishuMessage): void {
     if (!this.config.behavior.typingIndicator) return
+    // Only react in group chats when this bot is directly @mentioned
+    if (msg.chatType === 'group') {
+      if (!this.botOpenId) return
+      const mentioned = msg.mentions.some((m) => m.openId === this.botOpenId && !m.isAll)
+      if (!mentioned) return
+    }
     const reactions = ['PROUD', 'WITTY', 'SMART', 'SCOWL', 'ERROR']
     const reaction = reactions[Math.floor(Math.random() * reactions.length)]!
     this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
@@ -81,8 +87,11 @@ export class MessageHandler {
 
       // Stage 5a: Build system context — session info + workspace files
       // chat_id is always injected so agents can use it in delegate_to_agent calls
+      // current_time is injected so agents can track elapsed time for progress reporting
+      const now = new Date()
+      const currentTime = `${now.toLocaleDateString('zh-CN')} ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
       let extraSystemContext =
-        `<current_session>\nchat_id: ${msg.chatId}\nsender_user_id: ${msg.senderId}\n</current_session>`
+        `<current_session>\nchat_id: ${msg.chatId}\nsender_user_id: ${msg.senderId}\ncurrent_time: ${currentTime}\n</current_session>`
       if (this.config.behavior.injectWorkspaceContext) {
         const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
         if (workspaceCtx) extraSystemContext += '\n\n' + workspaceCtx
@@ -160,8 +169,10 @@ export class MessageHandler {
 
     const history = this.store.get(chatId)
 
+    const nowD = new Date()
+    const currentTimeD = `${nowD.toLocaleDateString('zh-CN')} ${nowD.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     let extraCtx =
-      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\n</current_session>`
+      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\ncurrent_time: ${currentTimeD}\n</current_session>`
     if (this.config.behavior.injectWorkspaceContext) {
       const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
       if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
