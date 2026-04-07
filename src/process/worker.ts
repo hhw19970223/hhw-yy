@@ -18,6 +18,7 @@ import { IpcSender } from '../feishu/IpcSender.js'
 import { ClaudeClient } from '../llm/ClaudeClient.js'
 import { ToolRegistry } from '../tools/ToolRegistry.js'
 import { createDelegateTools } from '../tools/feishu/delegate.js'
+import { createSendMessageTool } from '../tools/feishu/sendMessage.js'
 import { createBitableTools } from '../tools/feishu/bitable.js'
 import { createWorkspaceTools } from '../tools/workspace/index.js'
 import { createMemoryTools } from '../tools/memory/index.js'
@@ -125,6 +126,7 @@ async function main(): Promise<void> {
   // Delegation tools are always available — agents need to be able to collaborate
   const tools = new ToolRegistry()
   for (const def of createDelegateTools(botId, ipcSend, () => currentMessageId)) tools.register(def)
+  tools.register(createSendMessageTool(ipcSend, () => currentMessageId))
   // Workspace tools — read/write workspace/{botId}/ and workspace/common/
   for (const def of createWorkspaceTools(botId)) tools.register(def)
   // Memory tools — read/write MEMORY.md and daily notes
