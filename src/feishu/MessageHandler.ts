@@ -29,6 +29,17 @@ export class MessageHandler {
     this.botOpenId = openId
   }
 
+  /**
+   * Fire a typing reaction immediately when a message arrives — called BEFORE
+   * the per-chatId queue so the user sees feedback even if the chat is busy.
+   */
+  acknowledge(msg: FeishuMessage): void {
+    if (!this.config.behavior.typingIndicator) return
+    const reactions = ['PROUD', 'WITTY', 'SMART', 'SCOWL', 'ERROR']
+    const reaction = reactions[Math.floor(Math.random() * reactions.length)]!
+    this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
+  }
+
   async handle(msg: FeishuMessage): Promise<void> {
     // Stage 1: Message type filter
     if (!SUPPORTED_MESSAGE_TYPES.has(msg.messageType)) return
@@ -62,13 +73,6 @@ export class MessageHandler {
       messageId: msg.messageId,
       textPreview: msg.text.slice(0, 100),
     })
-
-    // Stage 4: Typing indicator
-    if (this.config.behavior.typingIndicator) {
-      const reactions = ['PROUD', 'WITTY', 'SMART', 'SCOWL', 'ERROR']
-      const reaction = reactions[Math.floor(Math.random() * reactions.length)]!
-      await this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
-    }
 
     try {
       // Stage 5: Build Claude input

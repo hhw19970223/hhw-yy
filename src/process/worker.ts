@@ -203,6 +203,7 @@ async function main(): Promise<void> {
         break
 
       case 'FEISHU_MESSAGE':
+        handler.acknowledge(msg.message)  // immediate — fires before queue
         enqueue(msg.message.chatId, () => handler.handle(msg.message))
         break
 
