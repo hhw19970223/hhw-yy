@@ -50,6 +50,7 @@ export class ClaudeClient {
     onChunk: (text: string) => void,
     attempt = 0,
     extraSystemContext?: string,
+    onToolStart?: (toolName: string, inputSummary: string) => void,
   ): Promise<{ tokensUsed: number }> {
     const system = extraSystemContext
       ? `${this.config.systemPrompt}\n\n${extraSystemContext}`
@@ -96,7 +97,7 @@ export class ClaudeClient {
         iteration = await this.streamIteration(allMessages, system, tools, onChunk)
       } catch (err) {
         return this.handleStreamError(err, () =>
-          this.chatStream(history, userMessage, onChunk, attempt + 1, extraSystemContext),
+          this.chatStream(history, userMessage, onChunk, attempt + 1, extraSystemContext, onToolStart),
           attempt,
         )
       }
@@ -104,6 +105,14 @@ export class ClaudeClient {
       totalTokens += iteration.tokens
 
       if (iteration.stopReason !== 'tool_use') break
+
+      // Notify caller before tool execution so it can send a progress message
+      if (onToolStart) {
+        for (const tc of iteration.toolCalls) {
+          const inputSummary = summarizeInput(tc.input)
+          onToolStart(tc.name, inputSummary)
+        }
+      }
 
       // Execute all tool calls and collect results
       const toolResults: Anthropic.ToolResultBlockParam[] = await Promise.all(
@@ -308,4 +317,14 @@ export class ClaudeClient {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Produce a short human-readable summary of a tool's input object. */
+function summarizeInput(input: unknown): string {
+  if (!input || typeof input !== 'object') return String(input ?? '').slice(0, 120)
+  const obj = input as Record<string, unknown>
+  // Prefer the most descriptive field
+  const key = ['command', 'path', 'query', 'text', 'note', 'content'].find((k) => typeof obj[k] === 'string')
+  if (key) return String(obj[key]).slice(0, 120)
+  return JSON.stringify(obj).slice(0, 120)
 }
