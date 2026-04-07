@@ -61,8 +61,10 @@ export class MessageHandler {
       return
     }
 
-    // Stage 3: Self-message filter
-    if (this.botOpenId && msg.senderId === this.botOpenId) return
+    // Stage 3: Bot-message filter — drop all app/bot messages (includes self)
+    // Without this, bots in the same group see each other's replies and respond,
+    // creating a response loop.
+    if (msg.senderType === 'app') return
 
     // Log incoming message
     const mentionStr = msg.mentions.length
