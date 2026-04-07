@@ -91,26 +91,9 @@ export class MessageHandler {
       textPreview: msg.text.slice(0, 100),
     })
 
-    // Track the most recent tool call so the heartbeat can report meaningful progress.
-    let currentActivity = '思考中…'
-    let currentReasoning = ''
-
-    // Infrastructure-level heartbeat: every 2 min send a text progress update
-    // regardless of what Claude or tools are doing.
-    logger.diag(`Heartbeat armed (interval=30s) for chat=${msg.chatId}`, this.botId)
-    const heartbeat = setInterval(() => {
-      const elapsedSec = Math.round((Date.now() - startTime) / 1_000)
-      const elapsedMin = Math.round(elapsedSec / 60)
-      logger.diag(`Heartbeat firing at ${elapsedSec}s for chat=${msg.chatId}, activity="${currentActivity}"`, this.botId)
-      const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
-      const text = currentReasoning
-        ? `⏳ 任务进行中（已 ${elapsed}）\n${currentReasoning}`
-        : `⏳ 任务进行中（已 ${elapsed}）`
-      this.sender
-        .sendText(msg.chatId, msg.messageId, text)
-        .then(() => logger.diag(`Heartbeat message sent to chat=${msg.chatId}`, this.botId))
-        .catch((err) => logger.diag(`Heartbeat sendText failed: ${err}`, this.botId))
-    }, 30_000)
+    // Hand heartbeat ownership to the main process (immune to worker event-loop starvation)
+    this.ipcSend({ type: 'HEARTBEAT_START', chatId: msg.chatId, replyToMessageId: msg.messageId })
+    logger.diag(`HEARTBEAT_START sent for chat=${msg.chatId}`, this.botId)
 
     try {
       // Stage 5: Build Claude input
@@ -139,9 +122,10 @@ export class MessageHandler {
         0,
         extraSystemContext,
         (toolName, inputSummary, claudeReasoning) => {
-          currentActivity = `${toolName}: ${inputSummary}`
-          if (claudeReasoning) currentReasoning = claudeReasoning
-          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)}) reasoning=${claudeReasoning.slice(0, 80)}`, this.botId)
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+          if (claudeReasoning) {
+            this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId: msg.chatId, reasoning: claudeReasoning })
+          }
         },
       )
 
@@ -195,8 +179,8 @@ export class MessageHandler {
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
     } finally {
-      logger.diag(`Heartbeat cleared for chat=${msg.chatId}`, this.botId)
-      clearInterval(heartbeat)
+      this.ipcSend({ type: 'HEARTBEAT_STOP', chatId: msg.chatId })
+      logger.diag(`HEARTBEAT_STOP sent for chat=${msg.chatId}`, this.botId)
     }
   }
 
@@ -214,7 +198,6 @@ export class MessageHandler {
     const history = this.store.get(chatId)
 
     const nowD = new Date()
-    const startTime = Date.now()
     const currentTimeD = `${nowD.toLocaleDateString('zh-CN')} ${nowD.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     let extraCtx =
       `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\ncurrent_time: ${currentTimeD}\n</current_session>`
@@ -223,23 +206,8 @@ export class MessageHandler {
       if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
     }
 
-    let currentActivity = '思考中…'
-    let currentReasoning = ''
-
-    logger.diag(`Heartbeat armed (interval=30s) for delegated chat=${chatId}`, this.botId)
-    const heartbeat = setInterval(() => {
-      const elapsedSec = Math.round((Date.now() - startTime) / 1_000)
-      const elapsedMin = Math.round(elapsedSec / 60)
-      logger.diag(`Heartbeat firing at ${elapsedSec}s for delegated chat=${chatId}, activity="${currentActivity}"`, this.botId)
-      const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
-      const text = currentReasoning
-        ? `⏳ 任务进行中（已 ${elapsed}）\n${currentReasoning}`
-        : `⏳ 任务进行中（已 ${elapsed}）`
-      this.sender
-        .sendText(chatId, replyToMessageId ?? null, text)
-        .then(() => logger.diag(`Heartbeat message sent to delegated chat=${chatId}`, this.botId))
-        .catch((err) => logger.diag(`Heartbeat sendText failed: ${err}`, this.botId))
-    }, 30_000)
+    this.ipcSend({ type: 'HEARTBEAT_START', chatId, replyToMessageId: replyToMessageId ?? null })
+    logger.diag(`HEARTBEAT_START sent for delegated chat=${chatId}`, this.botId)
 
     try {
       let reply = ''
@@ -250,9 +218,10 @@ export class MessageHandler {
         0,
         extraCtx,
         (toolName, inputSummary, claudeReasoning) => {
-          currentActivity = `${toolName}: ${inputSummary}`
-          if (claudeReasoning) currentReasoning = claudeReasoning
-          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)}) reasoning=${claudeReasoning.slice(0, 80)}`, this.botId)
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+          if (claudeReasoning) {
+            this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId, reasoning: claudeReasoning })
+          }
         },
       )
 
@@ -261,8 +230,8 @@ export class MessageHandler {
 
       logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
     } finally {
-      logger.diag(`Heartbeat cleared for delegated chat=${chatId}`, this.botId)
-      clearInterval(heartbeat)
+      this.ipcSend({ type: 'HEARTBEAT_STOP', chatId })
+      logger.diag(`HEARTBEAT_STOP sent for delegated chat=${chatId}`, this.botId)
       // Notify the delegating bot to stop its progress-inquiry timer
       if (delegationId) {
         this.ipcSend({ type: 'DELEGATE_DONE', fromBotId: this.botId, delegatorBotId: fromBotId, delegationId })

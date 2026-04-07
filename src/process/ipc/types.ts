@@ -50,6 +50,14 @@ export type UpwardMessage =
   | { type: 'FEISHU_REACTION_ADD'; messageId: string; reactionType: string }
   /** Worker → Gateway: remove a reaction emoji from a message */
   | { type: 'FEISHU_REACTION_REMOVE'; messageId: string; reactionId: string }
+  /**
+   * Worker → Manager: heartbeat lifecycle events.
+   * The main process runs the 30s timer so it is immune to event-loop starvation
+   * caused by the Anthropic streaming for-await microtask loop in the worker.
+   */
+  | { type: 'HEARTBEAT_START'; chatId: string; replyToMessageId: string | null }
+  | { type: 'HEARTBEAT_UPDATE'; chatId: string; reasoning: string }
+  | { type: 'HEARTBEAT_STOP'; chatId: string }
   /** Worker → Manager: delegate a task to another agent's worker */
   | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string; replyToMessageId?: string; delegationId?: string }
   /** Worker → Manager: delegated task complete — notify the delegating bot to stop its inquiry timer */

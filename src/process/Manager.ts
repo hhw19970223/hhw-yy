@@ -20,10 +20,21 @@ export interface HeartbeatConfig {
   timeoutMs: number
 }
 
+interface ProgressSession {
+  timer: NodeJS.Timeout
+  startTime: number
+  reasoning: string
+  replyToMessageId: string | null
+  botId: string
+  chatId: string
+}
+
 export class Manager {
   private bots = new Map<string, BotHandle>()
   private mainAgentConfigs = new Map<string, LoadedMainAgentConfig>()
   private heartbeatTimer: NodeJS.Timeout | null = null
+  /** Progress sessions keyed by "botId:chatId" — timer lives here, not in worker */
+  private progressSessions = new Map<string, ProgressSession>()
 
   constructor(
     private readonly gateway?: Gateway,
@@ -306,6 +317,37 @@ export class Manager {
         handle.lastMessageAt = new Date()
         break
 
+      case 'HEARTBEAT_START': {
+        const key = `${handle.botId}:${msg.chatId}`
+        // Clear any stale session for the same chat
+        this.stopProgressSession(key)
+        const session: ProgressSession = {
+          timer: setInterval(() => this.fireProgressHeartbeat(key), 30_000),
+          startTime: Date.now(),
+          reasoning: '',
+          replyToMessageId: msg.replyToMessageId,
+          botId: handle.botId,
+          chatId: msg.chatId,
+        }
+        this.progressSessions.set(key, session)
+        logger.diag(`Progress session started: key=${key}`)
+        break
+      }
+
+      case 'HEARTBEAT_UPDATE': {
+        const key = `${handle.botId}:${msg.chatId}`
+        const session = this.progressSessions.get(key)
+        if (session) session.reasoning = msg.reasoning
+        break
+      }
+
+      case 'HEARTBEAT_STOP': {
+        const key = `${handle.botId}:${msg.chatId}`
+        this.stopProgressSession(key)
+        logger.diag(`Progress session stopped: key=${key}`)
+        break
+      }
+
       case 'REPLY_SENT':
         break
 
@@ -397,6 +439,28 @@ export class Manager {
         break
       }
     }
+  }
+
+  private stopProgressSession(key: string): void {
+    const existing = this.progressSessions.get(key)
+    if (existing) {
+      clearInterval(existing.timer)
+      this.progressSessions.delete(key)
+    }
+  }
+
+  private fireProgressHeartbeat(key: string): void {
+    const session = this.progressSessions.get(key)
+    if (!session || !this.gateway) return
+    const elapsedSec = Math.round((Date.now() - session.startTime) / 1_000)
+    const elapsed = elapsedSec >= 60 ? `${Math.round(elapsedSec / 60)} 分钟` : `${elapsedSec} 秒`
+    const text = session.reasoning
+      ? `⏳ 任务进行中（已 ${elapsed}）\n${session.reasoning}`
+      : `⏳ 任务进行中（已 ${elapsed}）`
+    logger.diag(`Progress heartbeat firing: key=${key} elapsed=${elapsedSec}s`)
+    this.gateway
+      .sendText(session.botId, session.chatId, session.replyToMessageId, text)
+      .catch((err) => logger.warn(`Progress heartbeat sendText failed: ${err}`, session.botId))
   }
 
   private toSnapshot(h: BotHandle): BotSnapshot {
