@@ -1,9 +1,10 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { ClaudeError } from '../shared/errors.js'
+import { logger } from '../shared/logger.js'
 import type { ConversationTurn } from '../session/ConversationStore.js'
 import type { ToolRegistry } from '../tools/ToolRegistry.js'
 
-const MAX_TOOL_ITERATIONS = 10
+const MAX_TOOL_ITERATIONS = 30
 
 export class ClaudeClient {
   private client: Anthropic
@@ -51,6 +52,7 @@ export class ClaudeClient {
     attempt = 0,
     extraSystemContext?: string,
     onToolStart?: (toolName: string, inputSummary: string, claudeReasoning: string) => void,
+    onLLMStart?: () => void,
   ): Promise<{ tokensUsed: number }> {
     const system = extraSystemContext
       ? `${this.config.systemPrompt}\n\n${extraSystemContext}`
@@ -85,8 +87,15 @@ export class ClaudeClient {
     // ── Agentic loop ──────────────────────────────────────────────────────────
     let allMessages: Anthropic.MessageParam[] = this.buildMessages(history, userMessage)
     let totalTokens = 0
+    let hitIterationLimit = true
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
+      // Warn when accumulated messages are getting large (rough heuristic: 1 char ≈ 0.25 tokens)
+      const approxInputChars = JSON.stringify(allMessages).length + system.length
+      if (approxInputChars > 400_000) {
+        logger.warn(`Context size warning: ~${Math.round(approxInputChars / 4000)}K tokens at iteration ${i + 1} — risk of context overflow`)
+      }
+      onLLMStart?.()
       let iteration: {
         stopReason: string
         assistantContent: Anthropic.ContentBlock[]
@@ -97,14 +106,22 @@ export class ClaudeClient {
         iteration = await this.streamIteration(allMessages, system, tools, onChunk)
       } catch (err) {
         return this.handleStreamError(err, () =>
-          this.chatStream(history, userMessage, onChunk, attempt + 1, extraSystemContext, onToolStart),
+          this.chatStream(history, userMessage, onChunk, attempt + 1, extraSystemContext, onToolStart, onLLMStart),
           attempt,
         )
       }
 
       totalTokens += iteration.tokens
 
-      if (iteration.stopReason !== 'tool_use') break
+      if (iteration.stopReason === 'max_tokens') {
+        logger.warn(`Output truncated by max_tokens limit (${this.config.maxTokens}) at iteration ${i + 1}`)
+        hitIterationLimit = false
+        break
+      }
+      if (iteration.stopReason !== 'tool_use') {
+        hitIterationLimit = false
+        break
+      }
 
       // Notify caller before tool execution so it can send a progress message.
       // Include Claude's reasoning text from this iteration (what it said before
@@ -134,6 +151,10 @@ export class ClaudeClient {
         { role: 'assistant', content: iteration.assistantContent },
         { role: 'user', content: toolResults },
       ]
+    }
+
+    if (hitIterationLimit) {
+      logger.warn(`Agentic loop reached MAX_TOOL_ITERATIONS (${MAX_TOOL_ITERATIONS}) — task may be incomplete`)
     }
 
     return { tokensUsed: totalTokens }
@@ -216,6 +237,16 @@ export class ClaudeClient {
     }
     if (err instanceof Anthropic.APIError) {
       throw new ClaudeError(err.message, String(err.status), isRateLimit || isOverload)
+    }
+    // SDK-level stream error: API closed the stream before producing any content.
+    // Most common cause: accumulated tool results pushed input tokens over the context limit.
+    const isStreamEnded =
+      err instanceof Error && err.message.includes('stream ended without producing')
+    if (isStreamEnded) {
+      logger.warn(`Stream ended without response — input context likely too large`)
+      throw new ClaudeError(
+        '上下文过长，API 拒绝了请求。请减少单次读取的文件数量，或拆分为多个子任务。',
+      )
     }
     throw new ClaudeError(String(err))
   }

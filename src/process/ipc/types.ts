@@ -1,4 +1,3 @@
-import type { BotStatus } from '../../shared/types.js'
 import type { FeishuMessage } from '../../feishu/FeishuClient.js'
 
 // ─── Manager → Child (Downward) ───────────────────────────────────────────
@@ -22,14 +21,7 @@ export type DownwardMessage =
 export type UpwardMessage =
   | { type: 'READY'; botId: string; pid: number; connectedAt: string }
   | { type: 'PONG'; botId: string; replyTo: string; timestamp: string }
-  | {
-      type: 'STATUS_UPDATE'
-      botId: string
-      status: BotStatus
-      activeChatCount: number
-      lastMessageAt: string | null
-      restartCount: number
-    }
+  | { type: 'STATUS_UPDATE'; botId: string; activeChatCount: number }
   | { type: 'MESSAGE_RECEIVED'; botId: string; chatId: string; userId: string; messageId: string; textPreview: string }
   | {
       type: 'REPLY_SENT'

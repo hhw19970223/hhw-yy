@@ -1,5 +1,6 @@
 import { appendFile, mkdir, readFile, writeFile } from 'fs/promises'
 import { dirname } from 'path'
+import { logger } from '../shared/logger.js'
 
 export interface ConversationTurn {
   role: 'user' | 'assistant'
@@ -92,8 +93,9 @@ export class ConversationStore {
       if (this.persistPath) {
         await this.persistFull(chatId, compacted)
       }
-    } catch {
+    } catch (err) {
       // Compaction failed — leave history intact, it will be hard-capped on next append
+      logger.warn(`Compaction failed for chat ${chatId}: ${err}`)
     }
   }
 

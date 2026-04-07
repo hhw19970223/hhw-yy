@@ -56,18 +56,15 @@ _这个文件是你的。随着你了解自己，随时更新它。_
   'AGENTS.md': (botId) =>
     `# 行为指南 — ${botId}
 
-这个目录是你的家。认真对待它。
+## 你已知道的信息
 
-## 每次会话启动
+以下内容已在启动时自动注入系统提示，**无需再用工具读取**：
 
-每次对话开始前：
+- \`SOUL.md\`、\`IDENTITY.md\`、\`TOOLS.md\`、\`MEMORY.md\` — 已全部加载
+- \`agents/common/TEAM.md\` — 团队信息已在工作区上下文中注入
+- 近期每日记忆（今天/昨天的 \`memory/YYYY-MM-DD.md\`）— 已加载
 
-1. 读取 \`SOUL.md\` — 这是你是谁
-2. 读取 \`IDENTITY.md\` — 确认角色定位
-3. 如果存在 \`memory/YYYY-MM-DD.md\`（今天或昨天），读取获取近期上下文
-4. 读取 \`workspace/common/TEAM.md\` — 了解你在团队中的角色和协作方式
-
-不需要请求许可，直接做。
+收到消息后**直接处理任务**，不要先用工具重新读取这些文件。
 
 ## 记忆
 
@@ -81,7 +78,7 @@ _这个文件是你的。随着你了解自己，随时更新它。_
 
 ## 团队协作
 
-你是一个多 Agent 团队的成员。**团队信息见 \`workspace/common/TEAM.md\`**，包括：
+你是一个多 Agent 团队的成员。**团队信息见 \`agents/common/TEAM.md\`**，包括：
 - 谁是指挥官（拥有绝对权威）
 - 所有成员的 ID 和职责
 - 协作协议和委托规范
@@ -131,7 +128,7 @@ delegate_to_agent({
 - 若你是**指挥官**：可向所有成员下达指令，作出最终决策
 - 若你是**成员**：服从指挥官指令，与其他成员平等协作
 
-详见 \`workspace/common/TEAM.md\`。
+详见 \`agents/common/TEAM.md\`。
 
 ## 飞书消息行为
 
@@ -262,6 +259,19 @@ export async function loadAgentPrompt(botId: string): Promise<string> {
 
   for (const filename of extras) {
     const content = await readFileSafe(join(dir, filename))
+    if (content) sections.push(content)
+  }
+
+  // ── Common section: shared files from agents/common/ (alphabetical) ───────
+  let commonFiles: string[] = []
+  try {
+    commonFiles = await readdir(Paths.agentCommonDir)
+  } catch {
+    // ignore if directory doesn't exist yet
+  }
+
+  for (const filename of commonFiles.filter((f) => f.endsWith('.md')).sort()) {
+    const content = await readFileSafe(join(Paths.agentCommonDir, filename))
     if (content) sections.push(content)
   }
 

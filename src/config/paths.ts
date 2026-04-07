@@ -13,5 +13,6 @@ export const Paths = {
   workspaceBot: (botId: string) => join(process.cwd(), 'workspace', botId),
   workspaceCommon: join(process.cwd(), 'workspace', 'common'),
   agentDir: (botId: string) => join(process.cwd(), 'agents', botId),
+  agentCommonDir: join(process.cwd(), 'agents', 'common'),
   agentMemoryDir: (botId: string) => join(process.cwd(), 'agents', botId, 'memory'),
 } as const

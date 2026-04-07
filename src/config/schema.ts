@@ -14,7 +14,7 @@ const ClaudeConfigSchema = z
     apiKey: z.string().optional(),
     baseUrl: z.string().url().optional(),
     model: z.string().default('claude-opus-4-6'),
-    maxTokens: z.number().int().positive().default(2048),
+    maxTokens: z.number().int().positive().default(8192),
     historyLimit: z.number().int().positive().default(20),
   })
   .default({})

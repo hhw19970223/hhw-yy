@@ -87,6 +87,15 @@ export function createWorkspaceTools(botId: string): ToolDef[] {
         const { scope, path } = ReadInput.parse(input)
         try {
           const content = await readWorkspaceFile(scope, path)
+          // Hard cap: prevent single large files from blowing out the context window.
+          // 50 000 chars ≈ 12 500 tokens — enough for any reasonably-sized source file.
+          const MAX_CHARS = 50_000
+          if (content.length > MAX_CHARS) {
+            return (
+              content.slice(0, MAX_CHARS) +
+              `\n\n[文件内容已截断：原始大小 ${content.length} 字符，仅显示前 ${MAX_CHARS} 字符。如需读取后续内容，请分段请求。]`
+            )
+          }
           return content
         } catch (err) {
           if (err instanceof WorkspacePathError) return JSON.stringify({ error: err.message })

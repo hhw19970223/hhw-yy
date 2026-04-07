@@ -310,7 +310,6 @@ export class Manager {
 
       case 'STATUS_UPDATE':
         handle.activeChatCount = msg.activeChatCount
-        if (msg.lastMessageAt) handle.lastMessageAt = new Date(msg.lastMessageAt)
         break
 
       case 'MESSAGE_RECEIVED':
@@ -319,10 +318,12 @@ export class Manager {
 
       case 'HEARTBEAT_START': {
         const key = `${handle.botId}:${msg.chatId}`
-        // Clear any stale session for the same chat
+        if (this.progressSessions.has(key)) {
+          logger.warn(`HEARTBEAT_START overriding active session for chat ${msg.chatId}`, handle.botId)
+        }
         this.stopProgressSession(key)
         const session: ProgressSession = {
-          timer: setInterval(() => this.fireProgressHeartbeat(key), 30_000),
+          timer: setInterval(() => this.fireProgressHeartbeat(key), 120_000),
           startTime: Date.now(),
           reasoning: '',
           replyToMessageId: msg.replyToMessageId,
@@ -454,9 +455,8 @@ export class Manager {
     if (!session || !this.gateway) return
     const elapsedSec = Math.round((Date.now() - session.startTime) / 1_000)
     const elapsed = elapsedSec >= 60 ? `${Math.round(elapsedSec / 60)} 分钟` : `${elapsedSec} 秒`
-    const text = session.reasoning
-      ? `⏳ 任务进行中（已 ${elapsed}）\n${session.reasoning}`
-      : `⏳ 任务进行中（已 ${elapsed}）`
+    const activity = session.reasoning || '处理中...'
+    const text = `【进度更新】正在执行 ${activity}\n已完成：已运行 ${elapsed}\n下一步：继续执行任务`
     logger.diag(`Progress heartbeat firing: key=${key} elapsed=${elapsedSec}s`)
     this.gateway
       .sendText(session.botId, session.chatId, session.replyToMessageId, text)

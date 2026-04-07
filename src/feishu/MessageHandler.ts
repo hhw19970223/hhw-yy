@@ -12,6 +12,11 @@ export type IpcSend = (msg: UpwardMessage) => void
 
 const SUPPORTED_MESSAGE_TYPES = new Set(['text', 'post'])
 
+function formatCurrentTime(): string {
+  const now = new Date()
+  return `${now.toLocaleDateString('zh-CN')} ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
+}
+
 export class MessageHandler {
   private botOpenId: string | null = null
 
@@ -103,10 +108,8 @@ export class MessageHandler {
       // Stage 5a: Build system context — session info + workspace files
       // chat_id is always injected so agents can use it in delegate_to_agent calls
       // current_time is injected so agents can track elapsed time for progress reporting
-      const now = new Date()
-      const currentTime = `${now.toLocaleDateString('zh-CN')} ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
       let extraSystemContext =
-        `<current_session>\nchat_id: ${msg.chatId}\nsender_user_id: ${msg.senderId}\ncurrent_time: ${currentTime}\n</current_session>`
+        `<current_session>\nchat_id: ${msg.chatId}\nsender_user_id: ${msg.senderId}\ncurrent_time: ${formatCurrentTime()}\n</current_session>`
       if (this.config.behavior.injectWorkspaceContext) {
         const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
         if (workspaceCtx) extraSystemContext += '\n\n' + workspaceCtx
@@ -127,6 +130,7 @@ export class MessageHandler {
             this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId: msg.chatId, reasoning: claudeReasoning })
           }
         },
+        () => { this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId: msg.chatId, reasoning: '正在生成回复...' }) },
       )
 
       // Stage 7: Update conversation store + reply
@@ -197,10 +201,8 @@ export class MessageHandler {
 
     const history = this.store.get(chatId)
 
-    const nowD = new Date()
-    const currentTimeD = `${nowD.toLocaleDateString('zh-CN')} ${nowD.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     let extraCtx =
-      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\ncurrent_time: ${currentTimeD}\n</current_session>`
+      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\ncurrent_time: ${formatCurrentTime()}\n</current_session>`
     if (this.config.behavior.injectWorkspaceContext) {
       const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
       if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
@@ -223,6 +225,7 @@ export class MessageHandler {
             this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId, reasoning: claudeReasoning })
           }
         },
+        () => { this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId, reasoning: '正在生成回复...' }) },
       )
 
       this.store.append(chatId, text, reply)
@@ -240,7 +243,7 @@ export class MessageHandler {
     }
   }
 
-  async handleInjected(chatId: string, userId: string, text: string, syntheticMsgId: string): Promise<void> {
+  async handleInjected(chatId: string, _userId: string, text: string, syntheticMsgId: string): Promise<void> {
     const history = this.store.get(chatId)
     const { text: reply, tokensUsed } = await this.claude.chat(history, text)
     this.store.append(chatId, text, reply)
@@ -253,7 +256,6 @@ export class MessageHandler {
     })
 
     logger.info(`Inject reply sent, ${tokensUsed} tokens`, this.botId)
-    void userId
   }
 
   // ─── Gate ────────────────────────────────────────────────────────────────

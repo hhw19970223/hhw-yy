@@ -27,7 +27,6 @@ import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
 import { logger, setupErrorLog, setupDiagLog, setProcessLabel } from '../shared/logger.js'
-import { BotStatus } from '../shared/types.js'
 import type { DownwardMessage, UpwardMessage } from './ipc/types.js'
 import { Paths } from '../config/paths.js'
 
@@ -197,14 +196,7 @@ async function main(): Promise<void> {
 
   // Periodic status heartbeat + memory flush
   const statusInterval = setInterval(() => {
-    ipcSend({
-      type: 'STATUS_UPDATE',
-      botId,
-      status: BotStatus.READY,
-      activeChatCount: store.stats().totalChats,
-      lastMessageAt: null,
-      restartCount: 0,
-    })
+    ipcSend({ type: 'STATUS_UPDATE', botId, activeChatCount: store.stats().totalChats })
     memory.save().catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
   }, 30_000)
 

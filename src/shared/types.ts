@@ -1,7 +1,6 @@
 export const BotStatus = {
   STARTING: 'STARTING',
   READY: 'READY',
-  DEGRADED: 'DEGRADED',
   STOPPING: 'STOPPING',
   STOPPED: 'STOPPED',
   CRASHED: 'CRASHED',

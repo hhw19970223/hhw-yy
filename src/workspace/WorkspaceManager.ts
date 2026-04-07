@@ -2,6 +2,7 @@ import { readdir, readFile, writeFile, unlink, mkdir, stat } from 'fs/promises'
 import { join, normalize, resolve, dirname, sep } from 'path'
 import { Paths } from '../config/paths.js'
 
+
 // ─── Errors ──────────────────────────────────────────────────────────────────
 
 export class WorkspacePathError extends Error {

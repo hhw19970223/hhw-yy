@@ -43,8 +43,8 @@ export class FeishuClient {
   private eventDispatcher: lark.EventDispatcher
   private botOpenId: string | null = null
   private messageHandler: MessageEventHandler | null = null
-  /** Deduplication: track last 500 processed message IDs */
-  private seenMessages = new Set<string>()
+  /** Deduplication: messageId → arrival timestamp (ms). Entries expire after 60s. */
+  private seenMessages = new Map<string, number>()
 
   constructor(
     private readonly botId: string,
@@ -143,12 +143,14 @@ export class FeishuClient {
   }
 
   private isDuplicate(messageId: string): boolean {
+    const now = Date.now()
     if (this.seenMessages.has(messageId)) return true
-    this.seenMessages.add(messageId)
-    // Keep memory bounded — remove oldest entry when over 500
-    if (this.seenMessages.size > 500) {
-      const oldest = this.seenMessages.values().next().value as string
-      this.seenMessages.delete(oldest)
+    this.seenMessages.set(messageId, now)
+    // Expire entries older than 60s; Map is insertion-ordered so we can break early
+    const cutoff = now - 60_000
+    for (const [id, ts] of this.seenMessages) {
+      if (ts < cutoff) this.seenMessages.delete(id)
+      else break
     }
     return false
   }
