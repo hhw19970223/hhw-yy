@@ -74,6 +74,16 @@ export class MessageHandler {
       textPreview: msg.text.slice(0, 100),
     })
 
+    // Progress heartbeat: send a "still working" message every 2 minutes so the
+    // user knows the bot is alive during long agentic tasks (tool loops, git ops…).
+    // Fires only if the task actually takes > 2 minutes; cleared in finally.
+    const heartbeat = setInterval(() => {
+      const elapsedMin = Math.round((Date.now() - startTime) / 60_000)
+      this.sender
+        .sendText(msg.chatId, msg.messageId, `⏳ 仍在处理中（已 ${elapsedMin} 分钟），请稍候…`)
+        .catch(() => undefined)
+    }, 2 * 60_000)
+
     try {
       // Stage 5: Build Claude input
       // msg.text is already clean (mention keys stripped by FeishuClient)
@@ -144,6 +154,8 @@ export class MessageHandler {
       await this.sender
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
+    } finally {
+      clearInterval(heartbeat)
     }
   }
 
@@ -153,28 +165,40 @@ export class MessageHandler {
    * the reply directly to the Feishu chat (no syntheticMsgId round-trip needed).
    */
   async handleDelegated(chatId: string, fromBotId: string, text: string): Promise<void> {
-    const history = this.store.get(chatId)
+    const startTime = Date.now()
+    const heartbeat = setInterval(() => {
+      const elapsedMin = Math.round((Date.now() - startTime) / 60_000)
+      this.sender
+        .sendText(chatId, null, `⏳ 仍在处理中（已 ${elapsedMin} 分钟），请稍候…`)
+        .catch(() => undefined)
+    }, 2 * 60_000)
 
-    let extraCtx =
-      `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\n</current_session>`
-    if (this.config.behavior.injectWorkspaceContext) {
-      const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
-      if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
+    try {
+      const history = this.store.get(chatId)
+
+      let extraCtx =
+        `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\n</current_session>`
+      if (this.config.behavior.injectWorkspaceContext) {
+        const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
+        if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
+      }
+
+      let reply = ''
+      const { tokensUsed } = await this.claude.chatStream(
+        history,
+        text,
+        (chunk) => { reply += chunk },
+        0,
+        extraCtx,
+      )
+
+      this.store.append(chatId, text, reply)
+      await this.sender.sendText(chatId, null, reply)
+
+      logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
+    } finally {
+      clearInterval(heartbeat)
     }
-
-    let reply = ''
-    const { tokensUsed } = await this.claude.chatStream(
-      history,
-      text,
-      (chunk) => { reply += chunk },
-      0,
-      extraCtx,
-    )
-
-    this.store.append(chatId, text, reply)
-    await this.sender.sendText(chatId, null, reply)
-
-    logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
   }
 
   async handleInjected(chatId: string, userId: string, text: string, syntheticMsgId: string): Promise<void> {
