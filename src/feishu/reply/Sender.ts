@@ -17,6 +17,9 @@ export class Sender implements FeishuSender {
 
   async sendText(chatId: string, replyToMessageId: string | null, text: string): Promise<string> {
     const chunks = chunkText(text, this.chunkSize)
+    if (chunks.length > 1) {
+      logger.warn(`Reply split into ${chunks.length} chunks (len=${text.length}, chunkSize=${this.chunkSize}) for chat=${chatId}`, this.botId)
+    }
     let lastMsgId = ''
     for (const chunk of chunks) {
       const post = formatToPost(chunk)

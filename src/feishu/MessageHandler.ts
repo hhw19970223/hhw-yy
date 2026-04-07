@@ -51,6 +51,7 @@ export class MessageHandler {
   }
 
   async handle(msg: FeishuMessage): Promise<void> {
+    logger.diag(`handle() called: msgId=${msg.messageId} chatId=${msg.chatId} senderId=${msg.senderId} senderType=${msg.senderType}`, this.botId)
     // Stage 1: Message type filter
     if (!SUPPORTED_MESSAGE_TYPES.has(msg.messageType)) return
 
@@ -61,10 +62,14 @@ export class MessageHandler {
       return
     }
 
-    // Stage 3: Bot-message filter — drop all app/bot messages (includes self)
-    // Without this, bots in the same group see each other's replies and respond,
-    // creating a response loop.
-    if (msg.senderType === 'app') return
+    // Stage 3: Self-message filter
+    if (this.botOpenId && msg.senderId === this.botOpenId) return
+    // Guard: if botOpenId is not yet resolved, block all app-originated messages
+    // to prevent the bot from responding to its own replies before open_id is known
+    if (!this.botOpenId && msg.senderType === 'app') {
+      logger.diag(`Blocking app message — botOpenId not yet resolved (senderId=${msg.senderId})`, this.botId)
+      return
+    }
 
     // Log incoming message
     const mentionStr = msg.mentions.length
