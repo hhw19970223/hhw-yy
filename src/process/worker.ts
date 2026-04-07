@@ -21,6 +21,7 @@ import { createDelegateTools } from '../tools/feishu/delegate.js'
 import { createBitableTools } from '../tools/feishu/bitable.js'
 import { createWorkspaceTools } from '../tools/workspace/index.js'
 import { createMemoryTools } from '../tools/memory/index.js'
+import { createShellTools } from '../tools/shell/index.js'
 import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
@@ -124,6 +125,8 @@ async function main(): Promise<void> {
   for (const def of createWorkspaceTools(botId)) tools.register(def)
   // Memory tools — read/write MEMORY.md and daily notes
   for (const def of createMemoryTools(botId, memory)) tools.register(def)
+  // Shell tool — execute commands with cwd locked to workspace
+  for (const def of createShellTools(botId)) tools.register(def)
 
   // Bitable tools are opt-in via behavior.enableTools
   if (config.behavior.enableTools) {
