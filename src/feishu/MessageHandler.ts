@@ -96,10 +96,9 @@ export class MessageHandler {
       const elapsedMin = Math.round(elapsedSec / 60)
       logger.diag(`Heartbeat firing at ${elapsedSec}s for chat=${msg.chatId}, activity="${currentActivity}"`, this.botId)
       const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
-      const parts = [`⏳ 任务进行中（已 ${elapsed}）`]
-      if (currentReasoning) parts.push(currentReasoning)
-      parts.push(`当前：${currentActivity}`)
-      const text = parts.join('\n')
+      const text = currentReasoning
+        ? `⏳ 任务进行中（已 ${elapsed}）\n${currentReasoning}`
+        : `⏳ 任务进行中（已 ${elapsed}）`
       this.sender
         .sendText(msg.chatId, msg.messageId, text)
         .then(() => logger.diag(`Heartbeat message sent to chat=${msg.chatId}`, this.botId))
@@ -135,7 +134,7 @@ export class MessageHandler {
         (toolName, inputSummary, claudeReasoning) => {
           currentActivity = `${toolName}: ${inputSummary}`
           if (claudeReasoning) currentReasoning = claudeReasoning
-          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)}) reasoning=${claudeReasoning.slice(0, 80)}`, this.botId)
         },
       )
 
@@ -226,11 +225,11 @@ export class MessageHandler {
       const elapsedMin = Math.round(elapsedSec / 60)
       logger.diag(`Heartbeat firing at ${elapsedSec}s for delegated chat=${chatId}, activity="${currentActivity}"`, this.botId)
       const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
-      const parts = [`⏳ 任务进行中（已 ${elapsed}）`]
-      if (currentReasoning) parts.push(currentReasoning)
-      parts.push(`当前：${currentActivity}`)
+      const text = currentReasoning
+        ? `⏳ 任务进行中（已 ${elapsed}）\n${currentReasoning}`
+        : `⏳ 任务进行中（已 ${elapsed}）`
       this.sender
-        .sendText(chatId, replyToMessageId ?? null, parts.join('\n'))
+        .sendText(chatId, replyToMessageId ?? null, text)
         .then(() => logger.diag(`Heartbeat message sent to delegated chat=${chatId}`, this.botId))
         .catch((err) => logger.diag(`Heartbeat sendText failed: ${err}`, this.botId))
     }, 30_000)
@@ -246,7 +245,7 @@ export class MessageHandler {
         (toolName, inputSummary, claudeReasoning) => {
           currentActivity = `${toolName}: ${inputSummary}`
           if (claudeReasoning) currentReasoning = claudeReasoning
-          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)}) reasoning=${claudeReasoning.slice(0, 80)}`, this.botId)
         },
       )
 
