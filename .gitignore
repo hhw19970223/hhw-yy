@@ -8,7 +8,7 @@ node_modules/
 *.pid
 *.log
 error/
-workspace/
+/workspace/
 
 # Agent memory (daily notes — runtime data)
 # Identity/persona md files (SOUL.md etc.) are intentionally versioned

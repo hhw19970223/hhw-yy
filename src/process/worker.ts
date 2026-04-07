@@ -19,6 +19,8 @@ import { ClaudeClient } from '../llm/ClaudeClient.js'
 import { ToolRegistry } from '../tools/ToolRegistry.js'
 import { createDelegateTools } from '../tools/feishu/delegate.js'
 import { createBitableTools } from '../tools/feishu/bitable.js'
+import { createWorkspaceTools } from '../tools/workspace/index.js'
+import { createMemoryTools } from '../tools/memory/index.js'
 import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
@@ -110,9 +112,18 @@ async function main(): Promise<void> {
   // Initialize components
   const sender = new IpcSender(ipcSend)
 
+  // Memory — markdown daily notes in agents/{botId}/memory/
+  // Must initialize before tools so createMemoryTools can reference it
+  const memory = new MemoryStore()
+  await memory.load(Paths.agentMemoryDir(botId))
+
   // Delegation tools are always available — agents need to be able to collaborate
   const tools = new ToolRegistry()
   for (const def of createDelegateTools(botId, ipcSend)) tools.register(def)
+  // Workspace tools — read/write workspace/{botId}/ and workspace/common/
+  for (const def of createWorkspaceTools(botId)) tools.register(def)
+  // Memory tools — read/write MEMORY.md and daily notes
+  for (const def of createMemoryTools(botId, memory)) tools.register(def)
 
   // Bitable tools are opt-in via behavior.enableTools
   if (config.behavior.enableTools) {
@@ -136,10 +147,6 @@ async function main(): Promise<void> {
     ? (chatId: string) => Paths.conversationFile(botId, chatId)
     : undefined
   const store = new ConversationStore(config.claude.historyLimit, persistPath)
-
-  // Memory — markdown daily notes in agents/{botId}/memory/
-  const memory = new MemoryStore()
-  await memory.load(Paths.agentMemoryDir(botId))
 
   const handler = new MessageHandler(botId, config, claude, store, sender, ipcSend, memory)
 
