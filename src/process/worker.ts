@@ -174,6 +174,22 @@ async function main(): Promise<void> {
     memory.save().catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
   }, 30_000)
 
+  // ─── Per-chatId serialization queue ──────────────────────────────────────
+  // Different chatIds run in parallel (independent state, no blocking).
+  // Same chatId is serialized (prevents conversation-history race conditions).
+  const chatQueues = new Map<string, Promise<void>>()
+
+  function enqueue(chatId: string, fn: () => Promise<void>): void {
+    const tail = (chatQueues.get(chatId) ?? Promise.resolve())
+      .then(fn)
+      .catch((err) => logger.error(`Chat queue error [${chatId}]: ${err}`, botId))
+    chatQueues.set(chatId, tail)
+    // GC: remove entry once the chain drains so the Map doesn't grow unbounded
+    tail.finally(() => {
+      if (chatQueues.get(chatId) === tail) chatQueues.delete(chatId)
+    })
+  }
+
   // ─── IPC message handler ──────────────────────────────────────────────────
   process.on('message', (raw: unknown) => {
     const msg = raw as DownwardMessage
@@ -187,15 +203,11 @@ async function main(): Promise<void> {
         break
 
       case 'FEISHU_MESSAGE':
-        handler.handle(msg.message).catch((err) => {
-          logger.error(`Unhandled error in message handler: ${err}`, botId)
-        })
+        enqueue(msg.message.chatId, () => handler.handle(msg.message))
         break
 
       case 'DELEGATE_MESSAGE':
-        handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text).catch((err) => {
-          logger.error(`Unhandled error in delegated message handler: ${err}`, botId)
-        })
+        enqueue(msg.chatId, () => handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text))
         break
 
       case 'SET_BOT_INFO':
