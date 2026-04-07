@@ -90,11 +90,13 @@ export class MessageHandler {
 
     // Infrastructure-level heartbeat: every 2 min send a text progress update
     // regardless of what Claude or tools are doing.
-    logger.diag(`Heartbeat armed (interval=120s) for chat=${msg.chatId}`, this.botId)
+    logger.diag(`Heartbeat armed (interval=30s) for chat=${msg.chatId}`, this.botId)
     const heartbeat = setInterval(() => {
-      const elapsedMin = Math.round((Date.now() - startTime) / 60_000)
-      logger.diag(`Heartbeat firing at ${elapsedMin}min for chat=${msg.chatId}, activity="${currentActivity}"`, this.botId)
-      const parts = [`⏳ 任务进行中（已 ${elapsedMin} 分钟）`]
+      const elapsedSec = Math.round((Date.now() - startTime) / 1_000)
+      const elapsedMin = Math.round(elapsedSec / 60)
+      logger.diag(`Heartbeat firing at ${elapsedSec}s for chat=${msg.chatId}, activity="${currentActivity}"`, this.botId)
+      const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
+      const parts = [`⏳ 任务进行中（已 ${elapsed}）`]
       if (currentReasoning) parts.push(currentReasoning)
       parts.push(`当前：${currentActivity}`)
       const text = parts.join('\n')
@@ -102,7 +104,7 @@ export class MessageHandler {
         .sendText(msg.chatId, msg.messageId, text)
         .then(() => logger.diag(`Heartbeat message sent to chat=${msg.chatId}`, this.botId))
         .catch((err) => logger.diag(`Heartbeat sendText failed: ${err}`, this.botId))
-    }, 2 * 60_000)
+    }, 30_000)
 
     try {
       // Stage 5: Build Claude input
