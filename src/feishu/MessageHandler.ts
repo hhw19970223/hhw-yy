@@ -120,11 +120,6 @@ export class MessageHandler {
         (chunk) => { reply += chunk },
         0,
         extraSystemContext,
-        (toolName, inputSummary) => {
-          this.sender
-            .sendText(msg.chatId, msg.messageId, `⚙️ 正在执行: **${toolName}**\n\`${inputSummary}\``)
-            .catch(() => undefined)
-        },
       )
 
       // Stage 7: Update conversation store + reply
@@ -210,11 +205,6 @@ export class MessageHandler {
       (chunk) => { reply += chunk },
       0,
       extraCtx,
-      (toolName, inputSummary) => {
-        this.sender
-          .sendText(chatId, null, `⚙️ 正在执行: **${toolName}**\n\`${inputSummary}\``)
-          .catch(() => undefined)
-      },
     )
 
     this.store.append(chatId, text, reply)
