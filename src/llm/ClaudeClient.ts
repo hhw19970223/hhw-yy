@@ -50,7 +50,7 @@ export class ClaudeClient {
     onChunk: (text: string) => void,
     attempt = 0,
     extraSystemContext?: string,
-    onToolStart?: (toolName: string, inputSummary: string) => void,
+    onToolStart?: (toolName: string, inputSummary: string, claudeReasoning: string) => void,
   ): Promise<{ tokensUsed: number }> {
     const system = extraSystemContext
       ? `${this.config.systemPrompt}\n\n${extraSystemContext}`
@@ -106,11 +106,17 @@ export class ClaudeClient {
 
       if (iteration.stopReason !== 'tool_use') break
 
-      // Notify caller before tool execution so it can send a progress message
+      // Notify caller before tool execution so it can send a progress message.
+      // Include Claude's reasoning text from this iteration (what it said before
+      // deciding to call the tools) so the caller can show meaningful progress.
       if (onToolStart) {
+        const claudeReasoning = iteration.assistantContent
+          .filter((c): c is Anthropic.TextBlock => c.type === 'text')
+          .map((c) => c.text)
+          .join('')
+          .trim()
         for (const tc of iteration.toolCalls) {
-          const inputSummary = summarizeInput(tc.input)
-          onToolStart(tc.name, inputSummary)
+          onToolStart(tc.name, summarizeInput(tc.input), claudeReasoning)
         }
       }
 

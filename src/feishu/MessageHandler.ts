@@ -86,13 +86,17 @@ export class MessageHandler {
 
     // Track the most recent tool call so the heartbeat can report meaningful progress.
     let currentActivity = '思考中…'
+    let currentReasoning = ''
 
     // Infrastructure-level heartbeat: every 2 min send a text progress update
     // regardless of what Claude or tools are doing.
     const heartbeat = setInterval(() => {
       const elapsedMin = Math.round((Date.now() - startTime) / 60_000)
+      const parts = [`⏳ 任务进行中（已 ${elapsedMin} 分钟）`]
+      if (currentReasoning) parts.push(currentReasoning)
+      parts.push(`当前：${currentActivity}`)
       this.sender
-        .sendText(msg.chatId, msg.messageId, `⏳ 任务进行中（已 ${elapsedMin} 分钟）\n当前：${currentActivity}`)
+        .sendText(msg.chatId, msg.messageId, parts.join('\n'))
         .catch(() => undefined)
     }, 2 * 60_000)
 
@@ -122,7 +126,10 @@ export class MessageHandler {
         (chunk) => { reply += chunk },
         0,
         extraSystemContext,
-        (toolName, inputSummary) => { currentActivity = `${toolName}: ${inputSummary}` },
+        (toolName, inputSummary, claudeReasoning) => {
+          currentActivity = `${toolName}: ${inputSummary}`
+          if (claudeReasoning) currentReasoning = claudeReasoning
+        },
       )
 
       // Stage 7: Update conversation store + reply
