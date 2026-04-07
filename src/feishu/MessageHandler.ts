@@ -41,9 +41,13 @@ export class MessageHandler {
       const mentioned = msg.mentions.some((m) => m.openId === this.botOpenId && !m.isAll)
       if (!mentioned) return
     }
+    this.randomReaction(msg.messageId)
+  }
+
+  private randomReaction(messageId: string): void {
     const reactions = ['PROUD', 'WITTY', 'SMART', 'SCOWL', 'ERROR']
     const reaction = reactions[Math.floor(Math.random() * reactions.length)]!
-    this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
+    this.sender.addReaction(messageId, reaction).catch(() => undefined)
   }
 
   async handle(msg: FeishuMessage): Promise<void> {
@@ -183,9 +187,9 @@ export class MessageHandler {
    * the reply directly to the Feishu chat (no syntheticMsgId round-trip needed).
    */
   async handleDelegated(chatId: string, fromBotId: string, text: string, replyToMessageId?: string): Promise<void> {
-    // Acknowledge receipt of delegation with an emoji reaction on the original message
+    // Acknowledge receipt of delegation with a random emoji reaction on the original message
     if (replyToMessageId) {
-      this.sender.addReaction(replyToMessageId, 'THUMBSUP').catch(() => undefined)
+      this.randomReaction(replyToMessageId)
     }
 
     const history = this.store.get(chatId)
