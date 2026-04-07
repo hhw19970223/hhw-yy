@@ -80,6 +80,16 @@ export class MessageHandler {
       textPreview: msg.text.slice(0, 100),
     })
 
+    // Infrastructure-level heartbeat: fires every 2 min regardless of what
+    // Claude or tools are doing. Uses emoji reactions so it doesn't clutter chat.
+    const HEARTBEAT_REACTIONS = ['THINKING', 'WRITING', 'SEARCH', 'CLAPPING', 'THUMBSUP']
+    let heartbeatTick = 0
+    const heartbeat = setInterval(() => {
+      const reaction = HEARTBEAT_REACTIONS[heartbeatTick % HEARTBEAT_REACTIONS.length]!
+      heartbeatTick++
+      this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
+    }, 2 * 60_000)
+
     try {
       // Stage 5: Build Claude input
       // msg.text is already clean (mention keys stripped by FeishuClient)
@@ -153,6 +163,8 @@ export class MessageHandler {
       await this.sender
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
+    } finally {
+      clearInterval(heartbeat)
     }
   }
 
