@@ -208,6 +208,7 @@ export class MessageHandler {
     const history = this.store.get(chatId)
 
     const nowD = new Date()
+    const startTime = Date.now()
     const currentTimeD = `${nowD.toLocaleDateString('zh-CN')} ${nowD.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`
     let extraCtx =
       `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${fromBotId}\ncurrent_time: ${currentTimeD}\n</current_session>`
@@ -216,19 +217,47 @@ export class MessageHandler {
       if (workspaceCtx) extraCtx += '\n\n' + workspaceCtx
     }
 
-    let reply = ''
-    const { tokensUsed } = await this.claude.chatStream(
-      history,
-      text,
-      (chunk) => { reply += chunk },
-      0,
-      extraCtx,
-    )
+    let currentActivity = '思考中…'
+    let currentReasoning = ''
 
-    this.store.append(chatId, text, reply)
-    await this.sender.sendText(chatId, null, reply)
+    logger.diag(`Heartbeat armed (interval=30s) for delegated chat=${chatId}`, this.botId)
+    const heartbeat = setInterval(() => {
+      const elapsedSec = Math.round((Date.now() - startTime) / 1_000)
+      const elapsedMin = Math.round(elapsedSec / 60)
+      logger.diag(`Heartbeat firing at ${elapsedSec}s for delegated chat=${chatId}, activity="${currentActivity}"`, this.botId)
+      const elapsed = elapsedMin >= 1 ? `${elapsedMin} 分钟` : `${elapsedSec} 秒`
+      const parts = [`⏳ 任务进行中（已 ${elapsed}）`]
+      if (currentReasoning) parts.push(currentReasoning)
+      parts.push(`当前：${currentActivity}`)
+      this.sender
+        .sendText(chatId, replyToMessageId ?? null, parts.join('\n'))
+        .then(() => logger.diag(`Heartbeat message sent to delegated chat=${chatId}`, this.botId))
+        .catch((err) => logger.diag(`Heartbeat sendText failed: ${err}`, this.botId))
+    }, 30_000)
 
-    logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
+    try {
+      let reply = ''
+      const { tokensUsed } = await this.claude.chatStream(
+        history,
+        text,
+        (chunk) => { reply += chunk },
+        0,
+        extraCtx,
+        (toolName, inputSummary, claudeReasoning) => {
+          currentActivity = `${toolName}: ${inputSummary}`
+          if (claudeReasoning) currentReasoning = claudeReasoning
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+        },
+      )
+
+      this.store.append(chatId, text, reply)
+      await this.sender.sendText(chatId, null, reply)
+
+      logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
+    } finally {
+      logger.diag(`Heartbeat cleared for delegated chat=${chatId}`, this.botId)
+      clearInterval(heartbeat)
+    }
   }
 
   async handleInjected(chatId: string, userId: string, text: string, syntheticMsgId: string): Promise<void> {
