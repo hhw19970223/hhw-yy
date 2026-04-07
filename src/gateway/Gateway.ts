@@ -62,6 +62,47 @@ export class Gateway {
     logger.info('Gateway stopped all connections')
   }
 
+  /**
+   * Start a sleep/wake watchdog.
+   *
+   * JavaScript timers are suspended during OS sleep. When the computer wakes,
+   * the interval fires late by roughly the sleep duration. If the actual elapsed
+   * time is ≥ 2× the configured interval, a sleep/wake cycle is inferred and
+   * all WebSocket connections are reconnected immediately.
+   *
+   * Returns the timer handle so callers can clearInterval on shutdown.
+   */
+  startSleepWatchdog(intervalMs = 60_000): NodeJS.Timeout {
+    let lastTick = Date.now()
+
+    return setInterval(() => {
+      const now = Date.now()
+      const drift = now - lastTick - intervalMs
+      lastTick = now
+
+      if (drift > intervalMs) {
+        logger.info(
+          `Sleep/wake detected (drift=${Math.round(drift / 1000)}s) — reconnecting all WebSocket connections`,
+        )
+        void this.reconnectAll()
+      }
+    }, intervalMs)
+  }
+
+  private async reconnectAll(): Promise<void> {
+    await Promise.allSettled(
+      Array.from(this.connections.entries()).map(async ([botId, conn]) => {
+        try {
+          await conn.stop()
+          await conn.start()
+          logger.info('WebSocket reconnected after wake', botId)
+        } catch (err) {
+          logger.warn(`WebSocket reconnect failed after wake: ${err}`, botId)
+        }
+      }),
+    )
+  }
+
   getBotOpenId(botId: string): string | null {
     return this.connections.get(botId)?.getBotOpenId() ?? null
   }

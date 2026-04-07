@@ -69,6 +69,11 @@ const SubAgentConfigSchema = z.object({
   claude: ClaudeConfigSchema,
   access: AccessConfigSchema,
   behavior: BehaviorConfigSchema,
+  /**
+   * IDs of sibling sub-agents this agent leads / manages.
+   * Used to render team hierarchy in workspace/common/TEAM.md.
+   */
+  manages: z.array(z.string()).optional(),
 })
 
 // ─── Main agent config ───────────────────────────────────────────────────────

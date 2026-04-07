@@ -41,6 +41,9 @@ async function main(): Promise<void> {
 
   await gateway.startAll()
 
+  // ── Sleep/wake watchdog — reconnects WebSocket connections after OS sleep ───
+  const sleepWatchdog = gateway.startSleepWatchdog()
+
   // ── Manager: fork one worker process per bot ───────────────────────────────
   const heartbeat: HeartbeatConfig = {
     intervalMs: config.gateway.heartbeatIntervalMs,
@@ -64,6 +67,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down...`)
     try {
+      clearInterval(sleepWatchdog)
       manager.stopHeartbeat()
       await manager.stopAll()
       await gateway.stopAll()
