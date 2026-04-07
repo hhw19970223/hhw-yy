@@ -26,7 +26,7 @@ import { createShellTools } from '../tools/shell/index.js'
 import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
-import { logger, setupErrorLog, setProcessLabel } from '../shared/logger.js'
+import { logger, setupErrorLog, setupDiagLog, setProcessLabel } from '../shared/logger.js'
 import { BotStatus } from '../shared/types.js'
 import type { DownwardMessage, UpwardMessage } from './ipc/types.js'
 import { Paths } from '../config/paths.js'
@@ -163,6 +163,7 @@ async function main(): Promise<void> {
   // Error log to same dir as main process
   setProcessLabel(`worker:${botId}`)
   setupErrorLog('error')
+  setupDiagLog('logs')   // append only; main process already truncated at startup
 
   // Signal ready — no Feishu connection needed; the Gateway handles that
   ipcSend({ type: 'READY', botId, pid: process.pid, connectedAt: new Date().toISOString() })

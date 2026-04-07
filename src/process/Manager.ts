@@ -341,13 +341,13 @@ export class Manager {
         break
 
       case 'FEISHU_SEND':
-        logger.debug(`FEISHU_SEND from bot=${handle.botId} chat=${msg.chatId} len=${msg.text.length}`)
+        logger.diag(`FEISHU_SEND from bot=${handle.botId} chat=${msg.chatId} len=${msg.text.length}`)
         if (this.gateway) {
           this.gateway
             .sendText(handle.botId, msg.chatId, msg.replyToMessageId, msg.text)
             .catch((err) => logger.error(`Gateway sendText failed: ${err}`, handle.botId))
         } else {
-          logger.warn(`FEISHU_SEND dropped — no gateway`, handle.botId)
+          logger.diag(`FEISHU_SEND dropped — no gateway`, handle.botId)
         }
         break
 

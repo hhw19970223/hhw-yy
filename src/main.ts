@@ -12,7 +12,7 @@ import { Gateway } from './gateway/Gateway.js'
 import { Manager, type HeartbeatConfig } from './process/Manager.js'
 import { startMcpServer } from './mcp/server.js'
 import { startHttpServer } from './server/HttpServer.js'
-import { logger, setupErrorLog, setProcessLabel } from './shared/logger.js'
+import { logger, setupErrorLog, setupDiagLog, setProcessLabel } from './shared/logger.js'
 import { generateTeamRoster } from './workspace/TeamRoster.js'
 
 async function main(): Promise<void> {
@@ -21,6 +21,7 @@ async function main(): Promise<void> {
 
   setProcessLabel('gateway')
   setupErrorLog('error')
+  setupDiagLog('logs', true)   // truncate on each startup
 
   // Generate workspace/common/TEAM.md so all agents know the team hierarchy
   await generateTeamRoster(config)
