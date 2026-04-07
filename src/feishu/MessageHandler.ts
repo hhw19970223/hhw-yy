@@ -84,14 +84,16 @@ export class MessageHandler {
       textPreview: msg.text.slice(0, 100),
     })
 
-    // Infrastructure-level heartbeat: fires every 2 min regardless of what
-    // Claude or tools are doing. Uses emoji reactions so it doesn't clutter chat.
-    const HEARTBEAT_REACTIONS = ['THINKING', 'WRITING', 'SEARCH', 'CLAPPING', 'THUMBSUP']
-    let heartbeatTick = 0
+    // Track the most recent tool call so the heartbeat can report meaningful progress.
+    let currentActivity = '思考中…'
+
+    // Infrastructure-level heartbeat: every 2 min send a text progress update
+    // regardless of what Claude or tools are doing.
     const heartbeat = setInterval(() => {
-      const reaction = HEARTBEAT_REACTIONS[heartbeatTick % HEARTBEAT_REACTIONS.length]!
-      heartbeatTick++
-      this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
+      const elapsedMin = Math.round((Date.now() - startTime) / 60_000)
+      this.sender
+        .sendText(msg.chatId, msg.messageId, `⏳ 任务进行中（已 ${elapsedMin} 分钟）\n当前：${currentActivity}`)
+        .catch(() => undefined)
     }, 2 * 60_000)
 
     try {
@@ -120,6 +122,7 @@ export class MessageHandler {
         (chunk) => { reply += chunk },
         0,
         extraSystemContext,
+        (toolName, inputSummary) => { currentActivity = `${toolName}: ${inputSummary}` },
       )
 
       // Stage 7: Update conversation store + reply
