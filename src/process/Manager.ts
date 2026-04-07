@@ -372,6 +372,7 @@ export class Manager {
             chatId: msg.chatId,
             fromBotId: msg.fromBotId,
             text: msg.text,
+            replyToMessageId: msg.replyToMessageId,
           })
           logger.info(`Delegated → ${msg.targetBotId} in chat ${msg.chatId}`, handle.botId)
         } else {

@@ -118,9 +118,13 @@ async function main(): Promise<void> {
   const memory = new MemoryStore()
   await memory.load(Paths.agentMemoryDir(botId))
 
+  // Track the Feishu messageId of the message currently being processed so
+  // delegate_to_agent can pass it through to the receiving agent for reactions.
+  let currentMessageId: string | undefined
+
   // Delegation tools are always available — agents need to be able to collaborate
   const tools = new ToolRegistry()
-  for (const def of createDelegateTools(botId, ipcSend)) tools.register(def)
+  for (const def of createDelegateTools(botId, ipcSend, () => currentMessageId)) tools.register(def)
   // Workspace tools — read/write workspace/{botId}/ and workspace/common/
   for (const def of createWorkspaceTools(botId)) tools.register(def)
   // Memory tools — read/write MEMORY.md and daily notes
@@ -204,11 +208,14 @@ async function main(): Promise<void> {
 
       case 'FEISHU_MESSAGE':
         handler.acknowledge(msg.message)  // immediate — fires before queue
-        enqueue(msg.message.chatId, () => handler.handle(msg.message))
+        enqueue(msg.message.chatId, () => {
+          currentMessageId = msg.message.messageId
+          return handler.handle(msg.message).finally(() => { currentMessageId = undefined })
+        })
         break
 
       case 'DELEGATE_MESSAGE':
-        enqueue(msg.chatId, () => handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text))
+        enqueue(msg.chatId, () => handler.handleDelegated(msg.chatId, msg.fromBotId, msg.text, msg.replyToMessageId))
         break
 
       case 'SET_BOT_INFO':

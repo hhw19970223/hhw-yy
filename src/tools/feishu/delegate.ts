@@ -15,6 +15,7 @@ const DelegateInput = z.object({
 export function createDelegateTools(
   botId: string,
   ipcSend: (msg: UpwardMessage) => void,
+  getCurrentMessageId: () => string | undefined,
 ): ToolDef[] {
   return [
     {
@@ -56,6 +57,7 @@ export function createDelegateTools(
           chatId: chat_id,
           fromBotId: botId,
           text: `[来自 ${botId} 的委托]\n\n${message}`,
+          replyToMessageId: getCurrentMessageId(),
         })
 
         return JSON.stringify({

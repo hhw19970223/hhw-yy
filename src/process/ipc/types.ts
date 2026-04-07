@@ -13,7 +13,7 @@ export type DownwardMessage =
   /** Gateway → Worker: bot's own open_id, used for self-message + @mention checks */
   | { type: 'SET_BOT_INFO'; botOpenId: string }
   /** Manager → Worker: a task delegated by another agent */
-  | { type: 'DELEGATE_MESSAGE'; chatId: string; fromBotId: string; text: string }
+  | { type: 'DELEGATE_MESSAGE'; chatId: string; fromBotId: string; text: string; replyToMessageId?: string }
 
 // ─── Child → Manager (Upward) ─────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ export type UpwardMessage =
   /** Worker → Gateway: remove a reaction emoji from a message */
   | { type: 'FEISHU_REACTION_REMOVE'; messageId: string; reactionId: string }
   /** Worker → Manager: delegate a task to another agent's worker */
-  | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string }
+  | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string; replyToMessageId?: string }
 
 export function isUpwardMessage(msg: unknown): msg is UpwardMessage {
   return typeof msg === 'object' && msg !== null && 'type' in msg

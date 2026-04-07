@@ -74,16 +74,6 @@ export class MessageHandler {
       textPreview: msg.text.slice(0, 100),
     })
 
-    // Progress heartbeat: add an emoji reaction every 2 minutes so the user knows
-    // the bot is still alive during long agentic tasks. Cleared in finally.
-    const HEARTBEAT_REACTIONS = ['THINKING', 'WRITING', 'SEARCH', 'CLAPPING', 'THUMBSUP']
-    let heartbeatTick = 0
-    const heartbeat = setInterval(() => {
-      const reaction = HEARTBEAT_REACTIONS[heartbeatTick % HEARTBEAT_REACTIONS.length]!
-      heartbeatTick++
-      this.sender.addReaction(msg.messageId, reaction).catch(() => undefined)
-    }, 2 * 60_000)
-
     try {
       // Stage 5: Build Claude input
       // msg.text is already clean (mention keys stripped by FeishuClient)
@@ -154,8 +144,6 @@ export class MessageHandler {
       await this.sender
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
-    } finally {
-      clearInterval(heartbeat)
     }
   }
 
@@ -164,7 +152,12 @@ export class MessageHandler {
    * Uses the full streaming + tools + workspace-context pipeline, then sends
    * the reply directly to the Feishu chat (no syntheticMsgId round-trip needed).
    */
-  async handleDelegated(chatId: string, fromBotId: string, text: string): Promise<void> {
+  async handleDelegated(chatId: string, fromBotId: string, text: string, replyToMessageId?: string): Promise<void> {
+    // Acknowledge receipt of delegation with an emoji reaction on the original message
+    if (replyToMessageId) {
+      this.sender.addReaction(replyToMessageId, 'THUMBSUP').catch(() => undefined)
+    }
+
     const history = this.store.get(chatId)
 
     let extraCtx =
