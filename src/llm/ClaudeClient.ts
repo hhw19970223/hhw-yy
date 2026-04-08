@@ -90,11 +90,10 @@ export class ClaudeClient {
     let hitIterationLimit = true
 
     for (let i = 0; i < MAX_TOOL_ITERATIONS; i++) {
-      // Warn when accumulated messages are getting large (rough heuristic: 1 char ≈ 0.25 tokens)
-      const approxInputChars = JSON.stringify(allMessages).length + system.length
-      if (approxInputChars > 400_000) {
-        logger.warn(`Context size warning: ~${Math.round(approxInputChars / 4000)}K tokens at iteration ${i + 1} — risk of context overflow`)
-      }
+      // Trim old tool results when context is getting large to prevent API rejection.
+      // Keeps the original user query + the most recent 4 messages (2 interaction pairs).
+      // Pattern invariant: messages[0]=user, then [assistant,user]* — trimming preserves this.
+      allMessages = trimContext(allMessages, system, 400_000)
       onLLMStart?.()
       let iteration: {
         stopReason: string
@@ -354,6 +353,30 @@ export class ClaudeClient {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Trim old tool-call/result pairs from the message list when the accumulated
+ * context is approaching the API's context-window limit.
+ *
+ * Keeps messages[0] (original user query) + the most recent 4 messages
+ * (2 interaction pairs). The pattern [user, assistant, user, assistant, user]
+ * is always valid for the Anthropic messages API.
+ */
+function trimContext(
+  messages: Anthropic.MessageParam[],
+  system: string,
+  thresholdChars: number,
+): Anthropic.MessageParam[] {
+  const size = JSON.stringify(messages).length + system.length
+  if (size <= thresholdChars) return messages
+  if (messages.length <= 5) return messages // too short to trim safely
+
+  const trimmed = [messages[0], ...messages.slice(-4)]
+  logger.warn(
+    `Context trimmed: ${Math.round(size / 1000)}K chars → kept first + last 4 messages (${messages.length} → ${trimmed.length})`,
+  )
+  return trimmed
 }
 
 /** Produce a short human-readable summary of a tool's input object. */

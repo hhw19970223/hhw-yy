@@ -64,9 +64,11 @@ export function createShellTools(botId: string): ToolDef[] {
       spec: {
         name: 'shell_exec',
         description:
-          '在 workspace 目录下执行 shell 命令（git、npm、python 等均可）。' +
-          '工作目录默认为你的私有工作区，也可指定 "common" 共享工作区，或在其中的子目录。' +
-          '文件操作（创建/修改/删除）必须在 workspace 目录内完成，禁止操作工作区外的路径。',
+          '在 workspace 目录下执行 shell 命令（git、npm、find、python 等均可）。' +
+          '工作目录默认为你的私有工作区（workspace/<botId>/）。' +
+          '若要在共享工作区的项目文件上执行命令（如 find/grep 源码），必须指定 scope="common"，' +
+          '并用 workdir 指向目标子目录（如 workdir="project"）。' +
+          '不指定 scope 直接用 find/grep 项目路径会因 CWD 不匹配而失败。',
         input_schema: {
           type: 'object' as const,
           properties: {
