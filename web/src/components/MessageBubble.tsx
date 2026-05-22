@@ -16,11 +16,11 @@ import {
   Table2,
   Presentation,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { cn } from "@/lib/cn";
 import { Avatar } from "./Avatar";
 import { useStore } from "@/store";
-import type { AttachmentMeta, AttachmentPreviewData, Message, SkillFormMessage, SkillParamField } from "@/data/types";
+import type { AttachmentMeta, AttachmentPreviewData, DecisionMessage, Message, SkillFormMessage, SkillParamField } from "@/data/types";
 import { fetchAttachmentPreview, translateMarkdown } from "@/api/rest";
 
 function formatTime(iso: string) {
@@ -39,7 +39,36 @@ export function MessageBubble({
 }) {
   const isMe = msg.role === "user";
   const agents = useStore((s) => s.agents);
+  const conversationMessages = useStore((s) => s.messagesByConversation[msg.conversationId] ?? []);
   const agent = agents.find((a) => a.id === msg.authorId);
+  const adjacentDecisionGroup = useMemo(() => {
+    if (msg.kind !== "decision" || msg.decision.status !== "pending") return [];
+    const index = conversationMessages.findIndex((message) => message.id === msg.id);
+    if (index < 0) return [msg];
+    let start = index;
+    let end = index;
+    while (
+      start > 0 &&
+      conversationMessages[start - 1]?.kind === "decision" &&
+      (conversationMessages[start - 1] as DecisionMessage).decision.status === "pending"
+    ) {
+      start -= 1;
+    }
+    while (
+      end + 1 < conversationMessages.length &&
+      conversationMessages[end + 1]?.kind === "decision" &&
+      (conversationMessages[end + 1] as DecisionMessage).decision.status === "pending"
+    ) {
+      end += 1;
+    }
+    return conversationMessages.slice(start, end + 1).filter((message): message is DecisionMessage =>
+      message.kind === "decision" && message.decision.status === "pending",
+    );
+  }, [conversationMessages, msg]);
+
+  if (msg.kind === "decision" && msg.decision.status === "pending" && adjacentDecisionGroup[0]?.id !== msg.id) {
+    return null;
+  }
 
   return (
     <div
@@ -74,6 +103,12 @@ export function MessageBubble({
         {msg.kind === "approval" && <ApprovalCard msg={msg} />}
         {msg.kind === "task" && <TaskCard msg={msg} />}
         {msg.kind === "skill-form" && <SkillFormCard msg={msg} />}
+        {msg.kind === "decision" && (
+          <DecisionCard
+            msg={msg}
+            pendingDecisions={msg.decision.status === "pending" ? adjacentDecisionGroup : undefined}
+          />
+        )}
       </div>
     </div>
   );
@@ -93,14 +128,15 @@ function TextBody({
   const [translatedMarkdown, setTranslatedMarkdown] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const [translateError, setTranslateError] = useState("");
-  const parsed = parseQuotedMessage(msg.content);
-  const attachmentParsed = parseAttachments(parsed?.body ?? msg.content);
+  const safeContent = stripHiddenMessageMarkers(msg.content);
+  const parsed = parseQuotedMessage(safeContent);
+  const attachmentParsed = parseAttachments(parsed?.body ?? safeContent);
   const markdownContent = attachmentParsed.body;
   const visibleMarkdown = translatedMarkdown ?? markdownContent;
 
   async function copyText() {
     try {
-      await navigator.clipboard.writeText(msg.content);
+      await navigator.clipboard.writeText(safeContent);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
     } catch {
@@ -152,11 +188,20 @@ function TextBody({
           <ReactMarkdown
             remarkPlugins={[remarkGfm]}
             components={{
-              a: ({ children, href }) => (
-                <a href={href} target="_blank" rel="noreferrer">
-                  {children}
-                </a>
-              ),
+              a: ({ children, href }) => {
+                const label = markdownText(children);
+                const isDownload = label.includes("点击预览") || label.includes("在线预览");
+                return (
+                  <a
+                    href={href}
+                    target={isDownload ? undefined : "_blank"}
+                    rel={isDownload ? undefined : "noreferrer"}
+                    download={isDownload ? "" : undefined}
+                  >
+                    {isDownload ? "点击下载" : children}
+                  </a>
+                );
+              },
               table: ({ children }) => (
                 <div className="markdown-table-scroll">
                   <table>{children}</table>
@@ -216,6 +261,10 @@ function parseAttachments(content: string): { attachments: AttachmentMeta[]; bod
   } catch {
     return { attachments: [], body: content.replace(match[0], "").trimStart() };
   }
+}
+
+function stripHiddenMessageMarkers(content: string): string {
+  return content.replace(/<!--\s*sl-decision[\s\S]*?-->/g, "").trim();
 }
 
 function AttachmentPreviewGrid({ attachments }: { attachments: AttachmentMeta[] }) {
@@ -402,11 +451,22 @@ function PreviewFrame({
         <HeaderIcon size={14} className="shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate font-medium text-fg">{file.name}</span>
         <span className="shrink-0 font-mono text-[10px] text-fg-subtle">{formatFileSize(file.size)}</span>
+        <button
+          type="button"
+          title="在线预览"
+          aria-label="在线预览"
+          className="text-fg-subtle hover:text-accent"
+          onClick={() => document.getElementById(`preview-${cssSafeId(file.id)}`)?.scrollIntoView({ block: "center", behavior: "smooth" })}
+        >
+          预览
+        </button>
         <a href={file.url} download={file.name} title="下载文件" className="text-fg-subtle hover:text-accent">
           <Download size={13} />
         </a>
       </div>
-      {children}
+      <div id={`preview-${cssSafeId(file.id)}`}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -488,6 +548,16 @@ function formatFileSize(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function markdownText(node: React.ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(markdownText).join("");
+  return "";
+}
+
+function cssSafeId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 function parseQuotedMessage(content: string): {
@@ -984,6 +1054,219 @@ function ApprovalResolved({
     >
       <Icon size={14} />
       <span>{config.label}</span>
+    </div>
+  );
+}
+
+/* ─── Decision Card ─── */
+function DecisionCard({
+  msg,
+  pendingDecisions,
+}: {
+  msg: Extract<Message, { kind: "decision" }>;
+  pendingDecisions?: DecisionMessage[];
+}) {
+  const submitDecision = useStore((s) => s.submitDecision);
+  const submitDecisionBatch = useStore((s) => s.submitDecisionBatch);
+  const cancelDecision = useStore((s) => s.cancelDecision);
+  const decisions = useMemo(
+    () => pendingDecisions?.length ? pendingDecisions : [msg],
+    [pendingDecisions, msg],
+  );
+  const isBatch = decisions.length > 1 && msg.decision.status === "pending";
+  const [activeId, setActiveId] = useState(decisions[0]?.id ?? msg.id);
+  const [selectedById, setSelectedById] = useState<Record<string, string>>(() =>
+    Object.fromEntries(decisions.map((decisionMessage) => [
+      decisionMessage.id,
+      decisionMessage.decision.selectedOptionId ?? decisionMessage.decision.options[0]?.id ?? "",
+    ])),
+  );
+  const [customById, setCustomById] = useState<Record<string, string>>(() =>
+    Object.fromEntries(decisions.map((decisionMessage) => [
+      decisionMessage.id,
+      decisionMessage.decision.customResponse ?? "",
+    ])),
+  );
+  const [submitting, setSubmitting] = useState(false);
+  const active = decisions.find((decisionMessage) => decisionMessage.id === activeId) ?? decisions[0] ?? msg;
+  const { decision } = active;
+  const isResolved = decision.status !== "pending";
+  const selected = decision.options.find((option) => option.id === decision.selectedOptionId);
+  const selectedId = selectedById[active.id] ?? decision.options[0]?.id ?? "";
+  const customResponse = customById[active.id] ?? "";
+  const allAnswered = decisions.every((decisionMessage) =>
+    (customById[decisionMessage.id] ?? "").trim() ||
+    Boolean(selectedById[decisionMessage.id] ?? decisionMessage.decision.options[0]?.id),
+  );
+
+  useEffect(() => {
+    setSelectedById((current) => ({
+      ...Object.fromEntries(decisions.map((decisionMessage) => [
+        decisionMessage.id,
+        decisionMessage.decision.selectedOptionId ?? decisionMessage.decision.options[0]?.id ?? "",
+      ])),
+      ...current,
+    }));
+    setCustomById((current) => ({
+      ...Object.fromEntries(decisions.map((decisionMessage) => [
+        decisionMessage.id,
+        decisionMessage.decision.customResponse ?? "",
+      ])),
+      ...current,
+    }));
+    if (!decisions.some((decisionMessage) => decisionMessage.id === activeId)) {
+      setActiveId(decisions[0]?.id ?? msg.id);
+    }
+  }, [activeId, decisions, msg.id]);
+
+  async function handleSubmit() {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      if (isBatch) {
+        await submitDecisionBatch(msg.conversationId, decisions.map((decisionMessage) => ({
+          decisionMessageId: decisionMessage.id,
+          optionId: selectedById[decisionMessage.id] ?? decisionMessage.decision.options[0]?.id ?? "",
+          customResponse: customById[decisionMessage.id],
+        })));
+      } else {
+        await submitDecision(msg.conversationId, msg.id, selectedId, customResponse);
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function cancelAll() {
+    decisions.forEach((decisionMessage) => cancelDecision(msg.conversationId, decisionMessage.id));
+  }
+
+  return (
+    <div className="max-w-[520px] rounded-2xl border border-accent/30 bg-[rgba(0,220,255,0.06)] p-4 shadow-glow-accent-sm">
+      <div className="flex items-start gap-3">
+        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-accent/35 bg-accent/10 text-accent">
+          <CheckCircle2 size={17} />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <div className="text-sm font-semibold text-fg">{isBatch ? "批量决策" : decision.title}</div>
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-[0.06em]",
+                decision.status === "pending" && "bg-accent/15 text-accent",
+                decision.status === "submitted" && "bg-success/15 text-success",
+                decision.status === "cancelled" && "bg-fg-subtle/20 text-fg-muted",
+              )}
+            >
+              {decision.status === "pending" ? "待选择" : decision.status === "submitted" ? "已选择" : "已取消"}
+            </span>
+          </div>
+          <div className="mt-1 text-xs leading-relaxed text-fg-muted">
+            {isBatch ? `共 ${decisions.length} 个决策项，填写完后会一次性发出。` : decision.summary}
+          </div>
+          <div className="mt-3 text-[13px] font-medium leading-relaxed text-fg">{decision.question}</div>
+        </div>
+      </div>
+
+      {isBatch && (
+        <div className="mt-3 flex gap-1 overflow-x-auto rounded-[10px] border border-border bg-bg/70 p-1">
+          {decisions.map((decisionMessage, index) => {
+            const isActive = decisionMessage.id === active.id;
+            const answered = (customById[decisionMessage.id] ?? "").trim() ||
+              Boolean(selectedById[decisionMessage.id] ?? decisionMessage.decision.options[0]?.id);
+            return (
+              <button
+                key={decisionMessage.id}
+                type="button"
+                onClick={() => setActiveId(decisionMessage.id)}
+                className={cn(
+                  "shrink-0 rounded-[8px] px-3 py-1.5 text-xs transition",
+                  isActive ? "bg-accent/15 text-accent" : "text-fg-muted hover:bg-bg-hover hover:text-fg",
+                )}
+              >
+                决策 {index + 1}{answered ? " · 已填" : ""}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <div className="mt-3 space-y-2">
+        {decision.options.map((option) => {
+          const checked = isResolved
+            ? option.id === decision.selectedOptionId
+            : option.id === selectedId && !customResponse.trim();
+          return (
+            <button
+              key={option.id}
+              type="button"
+              disabled={isResolved}
+              onClick={() => {
+                setSelectedById((current) => ({ ...current, [active.id]: option.id }));
+                setCustomById((current) => ({ ...current, [active.id]: "" }));
+              }}
+              className={cn(
+                "w-full rounded-[10px] border px-3 py-2.5 text-left transition",
+                checked
+                  ? "border-accent/45 bg-accent/12 text-fg shadow-glow-accent-sm"
+                  : "border-border bg-bg-elevated/70 text-fg-muted hover:border-accent/30 hover:text-fg",
+                isResolved && "cursor-default hover:border-border",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <span
+                  className={cn(
+                    "h-2.5 w-2.5 rounded-full border",
+                    checked ? "border-accent bg-accent shadow-glow-accent-sm" : "border-fg-subtle",
+                  )}
+                />
+                <span className="text-[13px] font-medium">{option.label}</span>
+              </div>
+              {option.description && (
+                <div className="mt-1 pl-4 text-xs leading-relaxed text-fg-subtle">
+                  {option.description}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {decision.allowCustom && !isResolved && (
+        <textarea
+          value={customResponse}
+          onChange={(event) => setCustomById((current) => ({ ...current, [active.id]: event.target.value }))}
+          placeholder="或者直接输入你的决策..."
+          rows={2}
+          className="mt-3 w-full resize-none rounded-[10px] border border-border bg-bg px-3 py-2 text-xs leading-relaxed text-fg placeholder:text-fg-subtle focus:border-accent focus:outline-none"
+        />
+      )}
+
+      {isResolved ? (
+        <div className="mt-3 rounded-[10px] border border-border bg-bg/70 px-3 py-2 text-xs leading-relaxed text-fg-muted">
+          {decision.status === "submitted"
+            ? `已提交：${decision.customResponse || selected?.label || "自定义决策"}`
+            : "这个决策已取消。"}
+        </div>
+      ) : (
+        <div className="mt-4 flex gap-2">
+          <button
+            type="button"
+            disabled={submitting || (isBatch ? !allAnswered : (!selectedId && !customResponse.trim()))}
+            onClick={() => void handleSubmit()}
+            className="flex-1 rounded-[10px] border border-accent/35 bg-accent/12 px-3 py-2.5 text-[13px] font-medium text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {submitting ? "提交中..." : isBatch ? "一次性提交" : "提交选择"}
+          </button>
+          <button
+            type="button"
+            onClick={cancelAll}
+            className="rounded-[10px] border border-border bg-bg-elevated px-3 py-2.5 text-[13px] font-medium text-fg-muted transition hover:bg-bg-hover hover:text-fg"
+          >
+            暂不决定
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -22,11 +22,13 @@ const CRON_RE = /(?:^|\bcron\s*[:=]?\s*)([0-9*,/\-]+)\s+([0-9*,/\-]+)\s+([0-9*,/
 
 export function parseCronTask(text: string, now = new Date()): ParsedCronTask | null {
   const match = text.match(CRON_RE)
-  if (!match) return null
-  const cron = match.slice(1, 6).join(' ')
+  const cron = match ? match.slice(1, 6).join(' ') : parseNaturalCron(text)
+  if (!cron) return null
   const spec = parseCronSpec(cron)
   if (!spec) return null
-  const prompt = text.slice((match.index ?? 0) + match[0].length).trim() || text.replace(match[0], '').trim()
+  const prompt = match
+    ? text.slice((match.index ?? 0) + match[0].length).trim() || text.replace(match[0], '').trim()
+    : normalizeNaturalCronPrompt(text)
   const title = prompt.replace(/\s+/g, ' ').slice(0, 48) || `定时任务 ${cron}`
   return {
     cron,
@@ -34,6 +36,47 @@ export function parseCronTask(text: string, now = new Date()): ParsedCronTask | 
     title,
     nextRunAt: nextRunAt(spec, now).toISOString(),
   }
+}
+
+function parseNaturalCron(text: string): string | null {
+  const normalized = text.replace(/\s+/g, '')
+  if (!/(定时任务|定时|每隔|每|每天|每日)/.test(normalized)) return null
+
+  const minuteInterval = normalized.match(/每(?:隔)?(\d{1,2})分钟/)
+  if (minuteInterval) {
+    const interval = Number(minuteInterval[1])
+    if (Number.isInteger(interval) && interval >= 1 && interval <= 59) return `*/${interval} * * * *`
+  }
+  if (/每分钟/.test(normalized)) return '*/1 * * * *'
+
+  const hourInterval = normalized.match(/每(?:隔)?(\d{1,2})小时/)
+  if (hourInterval) {
+    const interval = Number(hourInterval[1])
+    if (Number.isInteger(interval) && interval >= 1 && interval <= 23) return `0 */${interval} * * *`
+  }
+  if (/每小时/.test(normalized)) return '0 * * * *'
+
+  const dailyAt = normalized.match(/(?:每天|每日)(\d{1,2})(?:点|时)(?:(\d{1,2})分)?/)
+  if (dailyAt) {
+    const hour = Number(dailyAt[1])
+    const minute = dailyAt[2] ? Number(dailyAt[2]) : 0
+    if (
+      Number.isInteger(hour) && hour >= 0 && hour <= 23 &&
+      Number.isInteger(minute) && minute >= 0 && minute <= 59
+    ) {
+      return `${minute} ${hour} * * *`
+    }
+  }
+
+  return null
+}
+
+function normalizeNaturalCronPrompt(text: string): string {
+  return text
+    .replace(/^(请)?(?:帮我)?(?:启动|创建|新建|添加)?一个?定时任务[，,:：\s]*/u, '')
+    .replace(/^(?:每分钟|每(?:隔)?\d{1,2}分钟|每小时|每(?:隔)?\d{1,2}小时|(?:每天|每日)\d{1,2}(?:点|时)(?:\d{1,2}分)?)[，,:：\s]*/u, '')
+    .replace(/^(?:帮我|请你|请)?/u, '')
+    .trim() || text.trim()
 }
 
 export function startCronScheduler(store: WebStore, manager: Manager): () => void {
@@ -50,6 +93,7 @@ export function registerCronTask(store: WebStore, input: {
   chatId: string
   botIds: string[]
   text: string
+  title?: string
 }): StoredScheduledTask | null {
   const parsed = parseCronTask(input.text)
   if (!parsed) return null
@@ -57,7 +101,7 @@ export function registerCronTask(store: WebStore, input: {
     id: randomUUID(),
     chatId: input.chatId,
     botIds: input.botIds,
-    title: parsed.title,
+    title: input.title?.trim() || parsed.title,
     cron: parsed.cron,
     prompt: parsed.prompt,
     nextRunAt: parsed.nextRunAt,

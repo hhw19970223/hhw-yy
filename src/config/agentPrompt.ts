@@ -7,6 +7,30 @@ const ORDERED_FILES = ['IDENTITY.md', 'SOUL.md', 'AGENTS.md', 'TOOLS.md', 'USER.
 
 const SEPARATOR = '\n\n---\n\n'
 
+const WEB_DECISION_PANEL_INSTRUCTIONS = `# Web 交互面板约定
+
+当你需要用户做明确决策、确认方案、审批风险，或在多个选项中选择下一步时，不要只用自然语言让用户回复。请在回复末尾追加一个 HTML 注释作为结构化标识，Web 会把它渲染成可交互的决策面板，注释本身不会展示给用户。
+
+格式：
+
+<!-- sl-decision
+{
+  "title": "需要你决策",
+  "summary": "一句话说明为什么需要用户选择",
+  "question": "你希望我按哪个方案继续？",
+  "options": [
+    { "id": "a", "label": "方案 A", "value": "用户选择方案 A 后要继续执行的明确指令", "description": "可选说明" },
+    { "id": "b", "label": "方案 B", "value": "用户选择方案 B 后要继续执行的明确指令" }
+  ],
+  "allowCustom": true
+}
+-->
+
+要求：
+- JSON 必须合法，不能有注释或尾逗号。
+- options 建议 2-4 个，每个 value 都要能作为用户选择后的继续执行指令。
+- 正文只保留必要背景，具体可选项放进结构化标识，避免让用户在普通文本里复制选择。`
+
 /** Default file templates created on first run if the file doesn't exist. */
 const DEFAULT_TEMPLATES: Record<string, (botId: string) => string> = {
   'IDENTITY.md': (botId) =>
@@ -280,6 +304,8 @@ export async function loadAgentPrompt(botId: string): Promise<string> {
   // ── Memory section: today + yesterday daily notes (if they exist) ─────────
   const recentNotes = await loadRecentNotes(memDir, 2)
   if (recentNotes) sections.push(recentNotes)
+
+  sections.push(WEB_DECISION_PANEL_INSTRUCTIONS)
 
   return sections.join(SEPARATOR)
 }

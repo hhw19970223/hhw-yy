@@ -183,6 +183,33 @@ export class Manager {
     return () => this.webListeners.delete(listener)
   }
 
+  delegateToAgent(input: {
+    fromBotId: string
+    targetBotId: string
+    chatId: string
+    text: string
+    replyToMessageId?: string
+    delegationId?: string
+  }): { ok: boolean; error?: string; delegationId: string } {
+    const delegationId = input.delegationId ?? randomUUID()
+    const targetHandle = this.bots.get(input.targetBotId)
+    if (!targetHandle?.process || targetHandle.status !== BotStatus.READY) {
+      const error = `Delegation target "${input.targetBotId}" not found or not ready`
+      logger.warn(error, input.fromBotId)
+      return { ok: false, error, delegationId }
+    }
+    sendToChild(targetHandle.process, {
+      type: 'DELEGATE_MESSAGE',
+      chatId: input.chatId,
+      fromBotId: input.fromBotId,
+      text: input.text,
+      replyToMessageId: input.replyToMessageId,
+      delegationId,
+    })
+    logger.info(`Delegated → ${input.targetBotId} in chat ${input.chatId}`, input.fromBotId)
+    return { ok: true, delegationId }
+  }
+
   private emitWeb(event: WebEvent): void {
     for (const listener of this.webListeners) {
       try { listener(event) } catch (err) { logger.warn(`Web listener error: ${err}`) }
@@ -432,20 +459,14 @@ export class Manager {
         break
 
       case 'DELEGATE_TO': {
-        const targetHandle = this.bots.get(msg.targetBotId)
-        if (targetHandle?.process && targetHandle.status === BotStatus.READY) {
-          sendToChild(targetHandle.process, {
-            type: 'DELEGATE_MESSAGE',
-            chatId: msg.chatId,
-            fromBotId: msg.fromBotId,
-            text: msg.text,
-            replyToMessageId: msg.replyToMessageId,
-            delegationId: msg.delegationId,
-          })
-          logger.info(`Delegated → ${msg.targetBotId} in chat ${msg.chatId}`, handle.botId)
-        } else {
-          logger.warn(`Delegation target "${msg.targetBotId}" not found or not ready`, handle.botId)
-        }
+        this.delegateToAgent({
+          fromBotId: msg.fromBotId,
+          targetBotId: msg.targetBotId,
+          chatId: msg.chatId,
+          text: msg.text,
+          replyToMessageId: msg.replyToMessageId,
+          delegationId: msg.delegationId,
+        })
         break
       }
 
@@ -517,6 +538,15 @@ export class Manager {
     const activity = session.reasoning || '处理中...'
     const text = `【进度更新】正在执行 ${activity}\n已完成：已运行 ${elapsed}\n下一步：继续执行任务`
     logger.diag(`Progress heartbeat firing: key=${key} elapsed=${elapsedSec}s`)
+    if (session.chatId.startsWith('web-')) {
+      this.emitWeb({
+        type: 'typing',
+        botId: session.botId,
+        chatId: session.chatId,
+        on: true,
+      })
+      return
+    }
     const handle = this.bots.get(session.botId)
     if (!handle?.process || handle.status !== BotStatus.READY) return
     sendToChild(handle.process, {

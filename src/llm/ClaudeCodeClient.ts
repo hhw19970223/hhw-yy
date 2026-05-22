@@ -1,7 +1,7 @@
 import { spawn } from 'child_process'
 import { createHash } from 'crypto'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { join, resolve } from 'path'
 import type { ConversationTurn } from '../session/ConversationStore.js'
 import { Paths } from '../config/paths.js'
 import type { LlmClient } from './types.js'
@@ -32,12 +32,14 @@ interface ClaudeCodeStreamLine {
 
 export class ClaudeCodeClient implements LlmClient {
   private readonly sessionQueues = new Map<string, Promise<unknown>>()
+  private readonly timeoutMs = Number(process.env.SL_CLAUDE_CODE_TIMEOUT_MS ?? 480_000)
 
   constructor(
     private readonly config: {
       botId: string
       model?: string
       systemPrompt: string
+      httpPort: number
       permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'dontAsk' | 'plan' | 'auto'
     },
   ) {}
@@ -144,6 +146,8 @@ export class ClaudeCodeClient implements LlmClient {
       this.config.permissionMode ?? 'bypassPermissions',
       '--system-prompt',
       systemPrompt,
+      '--mcp-config',
+      JSON.stringify(this.mcpConfig()),
       ...this.addDirArgs(),
     ]
     if (this.config.model) args.push('--model', this.config.model)
@@ -190,6 +194,21 @@ export class ClaudeCodeClient implements LlmClient {
     return dirs.flatMap((dir) => ['--add-dir', dir])
   }
 
+  private mcpConfig(): { mcpServers: Record<string, { command: string; args: string[]; env: Record<string, string> }> } {
+    return {
+      mcpServers: {
+        sl_agent_tools: {
+          command: 'npx',
+          args: ['tsx', resolve(process.cwd(), 'src/mcp/claudeCodeDelegateServer.ts')],
+          env: {
+            SL_BOT_ID: this.config.botId,
+            SL_HTTP_PORT: String(this.config.httpPort),
+          },
+        },
+      },
+    }
+  }
+
   private spawnClaude(
     args: string[],
     cwd: string,
@@ -203,6 +222,17 @@ export class ClaudeCodeClient implements LlmClient {
       let resultText = ''
       let streamedText = ''
       let tokensUsed = 0
+      let closed = false
+      let timedOut = false
+      const timeout = setTimeout(() => {
+        if (closed) return
+        timedOut = true
+        child.kill('SIGTERM')
+        setTimeout(() => {
+          if (!closed) child.kill('SIGKILL')
+        }, 3_000).unref()
+      }, this.timeoutMs)
+      timeout.unref()
 
       child.stdout.setEncoding('utf8')
       child.stdout.on('data', (chunk: string) => {
@@ -236,7 +266,13 @@ export class ClaudeCodeClient implements LlmClient {
       child.stderr.on('data', (chunk: string) => { stderr += chunk })
       child.on('error', reject)
       child.on('close', (code) => {
+        closed = true
+        clearTimeout(timeout)
         const text = streamedText || resultText
+        if (timedOut) {
+          reject(new Error(`claude timed out after ${Math.round(this.timeoutMs / 1000)}s`))
+          return
+        }
         const noConversation = `${stdout}\n${stderr}`.includes('No conversation found with session ID')
         if (code !== 0 && !noConversation) {
           if (text.trim()) {

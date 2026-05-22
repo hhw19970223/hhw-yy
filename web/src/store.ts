@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Agent, Conversation, Message, ScheduledTaskItem, SkillDefinition, SkillFormMessage, SkillParamField, TaskItem, TextMessage, ToolLogItem } from "@/data/types";
+import type { Agent, Conversation, DecisionMessage, DecisionOption, Message, ScheduledTaskItem, SkillDefinition, SkillFormMessage, SkillParamField, TaskItem, TextMessage, ToolLogItem } from "@/data/types";
 import {
   archiveConversation,
   deleteScheduledTask,
@@ -47,6 +47,9 @@ interface State {
   addSkillRunForm: (chatId: string, skill: SkillDefinition) => Promise<void>;
   submitSkillRunForm: (chatId: string, formMessageId: string, values: Record<string, string | number>) => Promise<void>;
   cancelSkillRunForm: (chatId: string, formMessageId: string, values?: Record<string, string | number>) => void;
+  submitDecision: (chatId: string, decisionMessageId: string, optionId: string, customResponse?: string) => Promise<void>;
+  submitDecisionBatch: (chatId: string, decisions: Array<{ decisionMessageId: string; optionId: string; customResponse?: string }>) => Promise<void>;
+  cancelDecision: (chatId: string, decisionMessageId: string) => void;
   applyEvent: (event: ServerEvent) => void;
   setConnection: (state: ConnectionState) => void;
 }
@@ -160,6 +163,161 @@ async function persistSkillForm(message: SkillFormMessage): Promise<void> {
   } catch (err) {
     console.warn("persist skill form failed", err);
   }
+}
+
+function decisionPreview(message: DecisionMessage): string {
+  const { decision } = message;
+  if (decision.status === "submitted") {
+    const selected = decision.options.find((option) => option.id === decision.selectedOptionId);
+    return `已选择：${selected?.label ?? decision.customResponse ?? "自定义回复"}`;
+  }
+  if (decision.status === "cancelled") return `已取消决策：${decision.title}`;
+  return `待决策：${decision.title}`;
+}
+
+async function persistDecision(message: DecisionMessage): Promise<void> {
+  try {
+    await upsertUiMessage(message, decisionPreview(message));
+  } catch (err) {
+    console.warn("persist decision failed", err);
+  }
+}
+
+function analyzeDecisionMessage(message: TextMessage): DecisionMessage | null {
+  const text = message.content.trim();
+  if (!text || message.role !== "agent") return null;
+
+  const marked = extractDecisionMarker(text);
+  const detected = marked ?? inferDecisionFromText(text);
+  if (!detected) return null;
+
+  return {
+    id: `${message.id}:decision`,
+    conversationId: message.conversationId,
+    role: "system",
+    authorId: "decision-panel",
+    authorName: "决策面板",
+    createdAt: nowIso(),
+    kind: "decision",
+    decision: {
+      sourceMessageId: message.id,
+      sourceAuthorName: message.authorName,
+      title: detected.title,
+      summary: detected.summary,
+      question: detected.question,
+      options: detected.options,
+      allowCustom: detected.allowCustom,
+      status: "pending",
+    },
+  };
+}
+
+function extractDecisionMarker(text: string): Omit<DecisionMessage["decision"], "sourceMessageId" | "sourceAuthorName" | "status" | "selectedOptionId" | "customResponse"> | null {
+  const jsonMatch = text.match(/<!--\s*sl-decision\s*([\s\S]*?)\s*-->/);
+  const base64Match = text.match(/<!--\s*sl-decision:([A-Za-z0-9+/=]+)\s*-->/);
+  if (!jsonMatch && !base64Match) return null;
+  try {
+    const raw = base64Match
+      ? decodeURIComponent(escape(atob(base64Match[1])))
+      : jsonMatch?.[1]?.trim() ?? "";
+    const parsed = JSON.parse(raw) as Partial<DecisionMessage["decision"]>;
+    const options = normalizeDecisionOptions(parsed.options ?? []);
+    if (!parsed.question || options.length < 1) return null;
+    return {
+      title: parsed.title || "需要你决策",
+      summary: parsed.summary || "Agent 需要你确认下一步。",
+      question: parsed.question,
+      options,
+      allowCustom: parsed.allowCustom ?? true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function inferDecisionFromText(text: string): Omit<DecisionMessage["decision"], "sourceMessageId" | "sourceAuthorName" | "status" | "selectedOptionId" | "customResponse"> | null {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const decisionIntent = /(请选择|你选择|请确认|需要你决定|需要你确认|是否|要不要|哪一种|哪一个|哪个|哪个方案|下一步|你来判断|你决定|你帮我选|让我选)/;
+  if (!decisionIntent.test(text)) {
+    return null;
+  }
+  const options = normalizeDecisionOptions(lines.flatMap((line, index) => {
+    if (line.startsWith("|") || line.startsWith("```")) return [];
+    const numbered = line.match(/^(?:[-*]\s*)?(?:方案|选项)?\s*([A-Da-d]|\d{1,2})[.、)：:]\s*(.+)$/);
+    if (numbered) {
+      return [{
+        id: fieldId(numbered[1], index),
+        label: cleanOptionLabel(numbered[2]),
+        value: numbered[2].trim(),
+      }];
+    }
+    return [];
+  }));
+
+  if (options.length < 2) return null;
+  const question = [...lines].reverse().find((line) => decisionIntent.test(line)) ?? "请选择下一步处理方式。";
+  return {
+    title: "需要你决策",
+    summary: "Agent 已整理出可选项，选择后会继续当前任务。",
+    question,
+    options: options.slice(0, 6),
+    allowCustom: true,
+  };
+}
+
+function normalizeDecisionOptions(options: unknown[]): DecisionOption[] {
+  return options
+    .map((raw, index): DecisionOption | null => {
+      if (typeof raw === "string") {
+        const label = cleanOptionLabel(raw);
+        return { id: `option-${index + 1}`, label, value: raw };
+      }
+      if (!raw || typeof raw !== "object") return null;
+      const item = raw as Partial<DecisionOption>;
+      const label = cleanOptionLabel(String(item.label ?? item.value ?? `选项 ${index + 1}`));
+      return {
+        id: String(item.id ?? fieldId(label, index)),
+        label,
+        value: String(item.value ?? item.label ?? label),
+        description: item.description ? String(item.description) : undefined,
+      };
+    })
+    .filter((option): option is DecisionOption => Boolean(option?.label && option.value));
+}
+
+function cleanOptionLabel(value: string): string {
+  return value
+    .replace(/^\s*(?:[-*]\s*)?(?:方案|选项)?\s*([A-Da-d]|\d{1,2})[.、)：:]\s*/, "")
+    .replace(/\*\*/g, "")
+    .trim()
+    .slice(0, 48);
+}
+
+function stripDecisionMarker(text: string): string {
+  return text.replace(/<!--\s*sl-decision[\s\S]*?-->/g, "").trim();
+}
+
+function fieldId(label: string, index: number): string {
+  const normalized = label
+    .trim()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || `option-${index + 1}`;
+}
+
+function withDecisionPanels(messages: Message[]): Message[] {
+  const existingIds = new Set(messages.map((message) => message.id));
+  const next: Message[] = [];
+  for (const message of messages) {
+    next.push(message);
+    if (message.kind !== "text" || message.role !== "agent" || message.streaming) continue;
+    const decision = analyzeDecisionMessage(message);
+    if (!decision || existingIds.has(decision.id)) continue;
+    existingIds.add(decision.id);
+    next.push(decision);
+    void persistDecision(decision);
+  }
+  return next;
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -277,10 +435,11 @@ export const useStore = create<State>((set, get) => ({
     if (!botId) return;
     try {
       const messages = await fetchMessages(botId, chatId);
+      const messagesWithPanels = withDecisionPanels(messages);
       set((s) => ({
         messagesByConversation: {
           ...s.messagesByConversation,
-          [chatId]: messages,
+          [chatId]: messagesWithPanels,
         },
         loadedConversations: new Set(s.loadedConversations).add(chatId),
       }));
@@ -549,6 +708,116 @@ export const useStore = create<State>((set, get) => ({
     if (cancelledMessage) void persistSkillForm(cancelledMessage);
   },
 
+  submitDecision: async (chatId, decisionMessageId, optionId, customResponse) => {
+    const current = (get().messagesByConversation[chatId] ?? [])
+      .find((message) => message.id === decisionMessageId && message.kind === "decision");
+    if (!current || current.kind !== "decision" || current.decision.status !== "pending") return;
+
+    const selected = current.decision.options.find((option) => option.id === optionId);
+    const text = customResponse?.trim()
+      ? `我的选择：${customResponse.trim()}`
+      : selected
+        ? `我的选择：${selected.label}\n\n${selected.value}`
+        : "";
+    if (!text) return;
+
+    let submittedDecision: DecisionMessage | undefined;
+    set((s) => ({
+      messagesByConversation: {
+        ...s.messagesByConversation,
+        [chatId]: (s.messagesByConversation[chatId] ?? []).map((message): Message =>
+          message.id === decisionMessageId && message.kind === "decision"
+            ? (submittedDecision = {
+                ...message,
+                decision: {
+                  ...message.decision,
+                  status: "submitted",
+                  selectedOptionId: customResponse?.trim() ? undefined : selected?.id,
+                  customResponse: customResponse?.trim() || undefined,
+                },
+              })
+            : message,
+        ),
+      },
+    }));
+    if (submittedDecision) void persistDecision(submittedDecision);
+    await get().sendMessage(chatId, text);
+  },
+
+  submitDecisionBatch: async (chatId, decisions) => {
+    const decisionMap = new Map(decisions.map((decision) => [decision.decisionMessageId, decision]));
+    const current = (get().messagesByConversation[chatId] ?? [])
+      .filter((message): message is DecisionMessage =>
+        message.kind === "decision" && message.decision.status === "pending" && decisionMap.has(message.id),
+      );
+    if (current.length === 0) return;
+
+    const submitted: DecisionMessage[] = [];
+    const responseParts = current.flatMap((message, index) => {
+      const input = decisionMap.get(message.id);
+      if (!input) return [];
+      const custom = input.customResponse?.trim();
+      const selected = message.decision.options.find((option) => option.id === input.optionId);
+      if (!custom && !selected) return [];
+      const answer = custom || selected?.label || "";
+      const value = custom ? "" : selected?.value || "";
+      return [
+        [
+          `${index + 1}. ${message.decision.question}`,
+          `选择：${answer}`,
+          value && value !== answer ? value : "",
+        ].filter(Boolean).join("\n"),
+      ];
+    });
+    if (responseParts.length !== current.length) return;
+
+    set((s) => ({
+      messagesByConversation: {
+        ...s.messagesByConversation,
+        [chatId]: (s.messagesByConversation[chatId] ?? []).map((message): Message => {
+          if (message.kind !== "decision") return message;
+          const input = decisionMap.get(message.id);
+          if (!input || message.decision.status !== "pending") return message;
+          const selected = message.decision.options.find((option) => option.id === input.optionId);
+          const next: DecisionMessage = {
+            ...message,
+            decision: {
+              ...message.decision,
+              status: "submitted",
+              selectedOptionId: input.customResponse?.trim() ? undefined : selected?.id,
+              customResponse: input.customResponse?.trim() || undefined,
+            },
+          };
+          submitted.push(next);
+          return next;
+        }),
+      },
+    }));
+    submitted.forEach((message) => void persistDecision(message));
+    await get().sendMessage(chatId, `我的批量决策：\n\n${responseParts.join("\n\n")}`);
+  },
+
+  cancelDecision: (chatId, decisionMessageId) => {
+    let cancelledDecision: DecisionMessage | undefined;
+    set((s) => ({
+      messagesByConversation: {
+        ...s.messagesByConversation,
+        [chatId]: (s.messagesByConversation[chatId] ?? []).map((message): Message =>
+          message.id === decisionMessageId && message.kind === "decision"
+            ? (cancelledDecision = {
+                ...message,
+                decision: {
+                  ...message.decision,
+                  status: "cancelled",
+                },
+              })
+            : message,
+        ),
+      },
+    }));
+    if (cancelledDecision) void persistDecision(cancelledDecision);
+  },
+
   applyEvent: (event) => {
     if (event.type === "agent_status") {
       set((s) => ({
@@ -576,6 +845,7 @@ export const useStore = create<State>((set, get) => ({
 
     if (event.type === "chunk" || event.type === "done") {
       const { chatId, messageId, botId } = event;
+      let decisionToPersist: DecisionMessage | undefined;
       set((s) => {
         const existing = s.messagesByConversation[chatId] ?? [];
         let foundIdx = -1;
@@ -588,6 +858,7 @@ export const useStore = create<State>((set, get) => ({
         }
         let nextArr: Message[];
         if (foundIdx === -1) {
+          const content = event.type === "chunk" ? event.chunk : stripDecisionMarker(event.fullText);
           // Bot replied without a matching placeholder (e.g., delegation chain or
           // bot replying to a Feishu-originated message we're observing). Append
           // a fresh agent bubble so it shows up in real time.
@@ -599,10 +870,17 @@ export const useStore = create<State>((set, get) => ({
             authorName: s.agents.find((a) => a.id === botId)?.name ?? botId,
             createdAt: nowIso(),
             kind: "text",
-            content: event.type === "chunk" ? event.chunk : event.fullText,
+            content,
             streaming: event.type === "chunk",
           };
           nextArr = [...existing, newMsg];
+          if (event.type === "done") {
+            const decision = analyzeDecisionMessage(newMsg);
+            if (decision && !nextArr.some((message) => message.id === decision.id)) {
+              decisionToPersist = decision;
+              nextArr = [...nextArr, decision];
+            }
+          }
         } else {
           nextArr = existing.slice();
           const target = nextArr[foundIdx];
@@ -613,11 +891,24 @@ export const useStore = create<State>((set, get) => ({
                 content: target.content + event.chunk,
               };
             } else {
-              nextArr[foundIdx] = {
+              const content = stripDecisionMarker(event.fullText || target.content);
+              const doneMessage: TextMessage = {
                 ...target,
-                content: event.fullText || target.content,
+                content,
                 streaming: false,
               };
+              nextArr[foundIdx] = {
+                ...doneMessage,
+              };
+              const decision = analyzeDecisionMessage(doneMessage);
+              if (decision && !nextArr.some((message) => message.id === decision.id)) {
+                decisionToPersist = decision;
+                nextArr = [
+                  ...nextArr.slice(0, foundIdx + 1),
+                  decision,
+                  ...nextArr.slice(foundIdx + 1),
+                ];
+              }
             }
           }
         }
@@ -628,6 +919,7 @@ export const useStore = create<State>((set, get) => ({
           },
         };
       });
+      if (decisionToPersist) void persistDecision(decisionToPersist);
     }
   },
 

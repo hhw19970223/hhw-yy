@@ -3,6 +3,7 @@ import type {
   Conversation,
   Message,
   ScheduledTaskItem,
+  DecisionMessage,
   SkillDefinition,
   SkillFormMessage,
   SkillParamField,
@@ -291,6 +292,21 @@ export async function fetchMessages(botId: string, chatId: string): Promise<Mess
 }
 
 function mapServerMessage(m: ServerMessage, botId: string, chatId: string): Message {
+  if (m.kind === "decision") {
+    const parsed = parseDecisionContent(m.content);
+    if (parsed) {
+      return {
+        id: m.id,
+        conversationId: m.conversationId || chatId,
+        role: "system",
+        authorId: m.authorId || "decision-panel",
+        authorName: m.authorName || "决策面板",
+        createdAt: m.createdAt,
+        kind: "decision",
+        decision: parsed,
+      };
+    }
+  }
   if (m.kind === "skill-form") {
     const parsed = parseSkillFormContent(m.content);
     if (parsed) {
@@ -319,6 +335,16 @@ function mapServerMessage(m: ServerMessage, botId: string, chatId: string): Mess
     content: m.content,
     status: "sent",
   };
+}
+
+function parseDecisionContent(content: string): DecisionMessage["decision"] | null {
+  try {
+    const parsed = JSON.parse(content) as DecisionMessage["decision"];
+    if (!parsed?.sourceMessageId || !Array.isArray(parsed.options)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
 }
 
 function parseSkillFormContent(content: string): SkillFormMessage["skillForm"] | null {
@@ -441,7 +467,7 @@ export async function postMessage(
 }
 
 export async function upsertUiMessage(message: Message, preview?: string): Promise<void> {
-  if (message.kind !== "skill-form") return;
+  if (message.kind !== "skill-form" && message.kind !== "decision") return;
   const res = await fetchWithTimeout("/web/ui-messages", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -453,7 +479,7 @@ export async function upsertUiMessage(message: Message, preview?: string): Promi
       authorName: message.authorName,
       createdAt: message.createdAt,
       kind: message.kind,
-      content: message.skillForm,
+      content: message.kind === "skill-form" ? message.skillForm : message.decision,
       preview,
     }),
   });

@@ -559,6 +559,72 @@ export function startHttpServer(deps: HttpServerDeps, port: number): Server {
       return
     }
 
+    if (req.method === 'POST' && url === '/internal/delegate') {
+      try {
+        const body = await readBody(req)
+        const parsed = JSON.parse(body) as {
+          fromBotId?: string
+          targetBotId?: string
+          chatId?: string
+          message?: string
+        }
+        if (!parsed.fromBotId || !parsed.targetBotId || !parsed.chatId || !parsed.message) {
+          sendJson(res, 400, { error: 'fromBotId, targetBotId, chatId and message are required' })
+          return
+        }
+        if (!knownBotIds.has(parsed.fromBotId) || !knownBotIds.has(parsed.targetBotId)) {
+          sendJson(res, 404, { error: 'Unknown fromBotId or targetBotId' })
+          return
+        }
+        if (parsed.fromBotId === parsed.targetBotId) {
+          sendJson(res, 400, { error: 'Cannot delegate to self' })
+          return
+        }
+        const result = manager.delegateToAgent({
+          fromBotId: parsed.fromBotId,
+          targetBotId: parsed.targetBotId,
+          chatId: parsed.chatId,
+          text: `[来自 ${parsed.fromBotId} 的委托]\n\n${parsed.message}`,
+        })
+        sendJson(res, result.ok ? 200 : 409, result)
+      } catch (err) {
+        sendJson(res, 500, { error: String(err) })
+      }
+      return
+    }
+
+    if (req.method === 'POST' && url === '/internal/scheduled-tasks') {
+      try {
+        const body = await readBody(req)
+        const parsed = JSON.parse(body) as {
+          chatId?: string
+          botIds?: string[]
+          cron?: string
+          prompt?: string
+          title?: string
+        }
+        const botIds = [...new Set((parsed.botIds ?? []).filter((id): id is string => typeof id === 'string' && knownBotIds.has(id)))]
+        if (!parsed.chatId || botIds.length === 0 || !parsed.cron || !parsed.prompt) {
+          sendJson(res, 400, { error: 'chatId, botIds, cron and prompt are required' })
+          return
+        }
+        const scheduledTask = registerCronTask(store, {
+          chatId: parsed.chatId,
+          botIds,
+          text: `cron ${parsed.cron} ${parsed.prompt}`,
+          title: parsed.title,
+        })
+        if (!scheduledTask) {
+          sendJson(res, 400, { error: 'invalid cron expression' })
+          return
+        }
+        sendJson(res, 200, scheduledTask)
+      } catch (err) {
+        sendJson(res, 500, { error: String(err) })
+      }
+      return
+    }
+
     if (req.method === 'POST' && url === '/web/ui-messages') {
       try {
         const body = await readBody(req)

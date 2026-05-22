@@ -291,9 +291,23 @@ export class MessageHandler {
         elapsedMs,
         fullText: reply,
       })
-      await this.sender.sendText(chatId, null, reply)
+      if (!isWebChatId(chatId)) {
+        await this.sender.sendText(chatId, null, reply)
+      }
 
       logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
+    } catch (err) {
+      const elapsedMs = Date.now() - startTime
+      logger.error(`Failed to handle delegated message: ${err}`, this.botId)
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId,
+        messageId: streamMessageId,
+        tokensUsed: 0,
+        elapsedMs,
+        fullText: `抱歉，${this.botId} 处理委托任务时出现错误：${String(err).slice(0, 200)}`,
+      })
     } finally {
       this.ipcSend({ type: 'HEARTBEAT_STOP', chatId })
       this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId, on: false })
@@ -516,4 +530,8 @@ export class MessageHandler {
 
     return { allowed: true }
   }
+}
+
+function isWebChatId(chatId: string): boolean {
+  return chatId.startsWith('web-')
 }

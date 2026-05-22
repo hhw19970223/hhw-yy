@@ -27,7 +27,7 @@ export interface Conversation {
 }
 
 export type MessageRole = "user" | "agent" | "system";
-export type MessageKind = "text" | "approval" | "task" | "tool-call" | "skill-form";
+export type MessageKind = "text" | "approval" | "task" | "tool-call" | "skill-form" | "decision";
 
 export interface BaseMessage {
   id: string;
@@ -125,12 +125,37 @@ export interface SkillFormMessage extends BaseMessage {
   };
 }
 
+export interface DecisionOption {
+  id: string;
+  label: string;
+  value: string;
+  description?: string;
+}
+
+export interface DecisionMessage extends BaseMessage {
+  kind: "decision";
+  role: "system";
+  decision: {
+    sourceMessageId: string;
+    sourceAuthorName: string;
+    title: string;
+    summary: string;
+    question: string;
+    options: DecisionOption[];
+    allowCustom: boolean;
+    status: "pending" | "submitted" | "cancelled";
+    selectedOptionId?: string;
+    customResponse?: string;
+  };
+}
+
 export type Message =
   | TextMessage
   | ApprovalMessage
   | TaskMessage
   | ToolCallMessage
-  | SkillFormMessage;
+  | SkillFormMessage
+  | DecisionMessage;
 
 export interface TaskItem {
   id: string;

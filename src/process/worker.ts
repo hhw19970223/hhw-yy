@@ -118,12 +118,16 @@ async function main(): Promise<void> {
   const claude = new ClaudeCodeClient({
     botId,
     model: config.claude.model,
+    httpPort: parsed.data.gateway.port,
     systemPrompt: [
       systemPrompt,
       '',
       '<runtime>',
       '你正在 Claude Code CLI 内运行。你可以直接使用 Claude Code 内置文件与 Bash 能力操作允许目录。',
-      '不要调用 delegate_to_agent、send_message、workspace_*、memory_*、shell_exec、bitable_* 这些旧版自定义工具名；当前主执行链路不再注册这些 Anthropic SDK tools。',
+      '你可以使用 MCP 工具 delegate_to_agent（在 Claude Code 中可能显示为 mcp__sl_agent_tools__delegate_to_agent）把任务委托给其他 Agent。',
+      '需要联网搜索或打开网页时，使用 MCP 工具 WebSearch / WebFetch（在 Claude Code 中可能显示为 mcp__sl_agent_tools__WebSearch / mcp__sl_agent_tools__WebFetch）；WebSearch 由 DuckDuckGo 提供结果。',
+      '委托时 target_bot_id 使用团队 Agent ID，chat_id 从 <current_session> 读取，message 写清背景、任务和期望产出。',
+      '不要调用 send_message、workspace_*、memory_*、shell_exec、bitable_* 这些旧版自定义工具名；当前主执行链路不再注册这些 Anthropic SDK tools。',
       '需要记录长期记忆时，直接编辑 agents/{botId}/MEMORY.md 或 agents/{botId}/memory/YYYY-MM-DD.md。',
       '需要产出工作文件时，直接写入 workspace/{botId}/ 或 workspace/common/。',
       '</runtime>',
