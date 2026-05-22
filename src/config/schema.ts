@@ -58,6 +58,22 @@ export const GatewayConfigSchema = z
   })
   .default({})
 
+// ─── Web IM config (optional) ────────────────────────────────────────────────
+
+export const WebConversationSchema = z.object({
+  botId: z.string().min(1),
+  chatId: z.string().min(1),
+  title: z.string().optional(),
+  kind: z.enum(['private', 'group']).default('private'),
+})
+
+export const WebConfigSchema = z
+  .object({
+    /** Optional list of (botId, chatId, title) shown as conversations in the Web IM. */
+    conversations: z.array(WebConversationSchema).default([]),
+  })
+  .default({})
+
 // ─── Sub-agent config ────────────────────────────────────────────────────────
 
 const SubAgentConfigSchema = z.object({
@@ -95,6 +111,7 @@ export const MainAgentConfigSchema = z.object({
 
 export const RootConfigSchema = z.object({
   gateway: GatewayConfigSchema,
+  web: WebConfigSchema,
   agents: z.array(MainAgentConfigSchema).min(1, 'At least one agent is required'),
 })
 
@@ -103,6 +120,8 @@ export const RootConfigSchema = z.object({
 export type SubAgentConfig = z.infer<typeof SubAgentConfigSchema>
 export type MainAgentConfig = z.infer<typeof MainAgentConfigSchema>
 export type GatewayConfig = z.infer<typeof GatewayConfigSchema>
+export type WebConfig = z.infer<typeof WebConfigSchema>
+export type WebConversation = z.infer<typeof WebConversationSchema>
 export type RootConfig = z.infer<typeof RootConfigSchema>
 
 /** Sub-agent config enriched with runtime context */

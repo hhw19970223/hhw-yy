@@ -1,5 +1,5 @@
 /**
- * hhw-yy gateway service entry point.
+ * SL gateway service entry point.
  *
  * Usage:
  *   node dist/main.js [config.json]
@@ -8,7 +8,6 @@
  * Default config path: ./config.json (relative to cwd)
  */
 import { loadRootConfig } from './config/loader.js'
-import { Gateway } from './gateway/Gateway.js'
 import { Manager, type HeartbeatConfig } from './process/Manager.js'
 import { startMcpServer } from './mcp/server.js'
 import { startHttpServer } from './server/HttpServer.js'
@@ -27,51 +26,46 @@ async function main(): Promise<void> {
   await generateTeamRoster(config)
 
   logger.info(
-    `Starting hhw-yy gateway: ${config.agents.length} agent(s), HTTP port ${config.gateway.port}`,
+    `Starting SL gateway: ${config.agents.length} agent(s), HTTP port ${config.gateway.port}`,
   )
 
-  // ── Gateway: open one Feishu WebSocket connection per bot ──────────────────
-  const gateway = new Gateway()
-
-  for (const agent of config.agents) {
-    gateway.registerBot(agent.id, agent.feishu, agent.behavior.chunkSize)
-    for (const sa of agent.subAgents) {
-      gateway.registerBot(sa.id, sa.feishu, sa.behavior.chunkSize)
-    }
-  }
-
-  await gateway.startAll()
-
-  // ── Sleep/wake watchdog — reconnects WebSocket connections after OS sleep ───
-  const sleepWatchdog = gateway.startSleepWatchdog()
-
-  // ── Manager: fork one worker process per bot ───────────────────────────────
+  // ── Manager: fork one worker process per bot.
+  // Each worker now owns its Feishu WebSocket connection directly.
   const heartbeat: HeartbeatConfig = {
     intervalMs: config.gateway.heartbeatIntervalMs,
     timeoutMs: config.gateway.heartbeatTimeoutMs,
   }
-  const manager = new Manager(gateway, heartbeat)
+  const manager = new Manager(heartbeat)
 
   for (const agent of config.agents) {
     await manager.startMainAgent(agent)
   }
 
-  // ── HTTP status server ─────────────────────────────────────────────────────
-  const httpServer = startHttpServer(manager, config.gateway.port)
+  // ── HTTP + Web IM server ───────────────────────────────────────────────────
+  const httpServer = startHttpServer(
+    {
+      manager,
+      agents: config.agents,
+      webConversations: config.web?.conversations ?? [],
+    },
+    config.gateway.port,
+  )
   logger.info(`HTTP server listening on port ${config.gateway.port}`)
 
   // ── MCP server (stdio transport — for Claude Code integration) ─────────────
-  startMcpServer(manager)
-  logger.info('MCP server started on stdio')
+  if (process.env.SL_DISABLE_MCP === '1') {
+    logger.info('MCP server disabled by SL_DISABLE_MCP')
+  } else {
+    startMcpServer(manager)
+    logger.info('MCP server started on stdio')
+  }
 
   // ── Graceful shutdown ──────────────────────────────────────────────────────
   const shutdown = async (signal: string): Promise<void> => {
     logger.info(`Received ${signal}, shutting down...`)
     try {
-      clearInterval(sleepWatchdog)
       manager.stopHeartbeat()
       await manager.stopAll()
-      await gateway.stopAll()
       httpServer.close()
     } finally {
       process.exit(0)

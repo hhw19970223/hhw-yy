@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { ToolDef } from '../ToolRegistry.js'
 import type { UpwardMessage } from '../../process/ipc/types.js'
+import type { FeishuSender } from '../../feishu/reply/Sender.js'
 
 const SendMessageInput = z.object({
   chat_id: z.string().describe('飞书会话 ID，从 <current_session> 的 chat_id 读取'),
@@ -17,6 +18,7 @@ const SendMessageInput = z.object({
 export function createSendMessageTool(
   ipcSend: (msg: UpwardMessage) => void,
   getCurrentMessageId: () => string | undefined,
+  directSender?: FeishuSender,
 ): ToolDef {
   return {
     spec: {
@@ -43,6 +45,10 @@ export function createSendMessageTool(
 
     execute: async (input) => {
       const { chat_id, text } = SendMessageInput.parse(input)
+      if (directSender) {
+        await directSender.sendText(chat_id, getCurrentMessageId() ?? null, text)
+        return JSON.stringify({ ok: true, mode: 'direct' })
+      }
       ipcSend({
         type: 'FEISHU_SEND',
         chatId: chat_id,

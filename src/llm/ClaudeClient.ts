@@ -3,10 +3,11 @@ import { ClaudeError } from '../shared/errors.js'
 import { logger } from '../shared/logger.js'
 import type { ConversationTurn } from '../session/ConversationStore.js'
 import type { ToolRegistry } from '../tools/ToolRegistry.js'
+import type { LlmClient } from './types.js'
 
 const MAX_TOOL_ITERATIONS = 30
 
-export class ClaudeClient {
+export class ClaudeClient implements LlmClient {
   private client: Anthropic
 
   constructor(

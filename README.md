@@ -1,4 +1,4 @@
-# hhw-yy
+# SL
 
 多机器人飞书网关服务，支持将多个飞书机器人接入 Claude，并通过 MCP Server 与 Claude Code 集成。
 
@@ -35,7 +35,7 @@
 ## 安装
 
 ```bash
-cd hhw-yy
+cd SL
 npm install
 ```
 
@@ -148,10 +148,10 @@ npm run pm2:log      # 查看日志
 ```json
 {
   "mcpServers": {
-    "hhw-yy": {
+    "SL": {
       "command": "node",
       "args": ["dist/main.js"],
-      "cwd": "/path/to/hhw-yy"
+      "cwd": "/path/to/SL"
     }
   }
 }

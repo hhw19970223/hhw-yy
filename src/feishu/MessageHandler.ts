@@ -1,6 +1,8 @@
+import { randomUUID } from 'crypto'
 import type { FeishuMessage, MentionInfo } from './FeishuClient.js'
-import { ClaudeClient } from '../llm/ClaudeClient.js'
+import type { LlmClient } from '../llm/types.js'
 import { ConversationStore } from '../session/ConversationStore.js'
+import type { ConversationTurn } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import type { FeishuSender } from './reply/Sender.js'
 import { logger } from '../shared/logger.js'
@@ -23,7 +25,7 @@ export class MessageHandler {
   constructor(
     private readonly botId: string,
     private readonly config: LoadedSubAgentConfig,
-    private readonly claude: ClaudeClient,
+    private readonly claude: LlmClient,
     private readonly store: ConversationStore,
     private readonly sender: FeishuSender,
     private readonly ipcSend: IpcSend,
@@ -86,6 +88,9 @@ export class MessageHandler {
     )
 
     const startTime = Date.now()
+    // A unique id for this streaming reply so web subscribers can route chunks
+    // into the correct placeholder bubble.
+    const streamMessageId = randomUUID()
 
     this.ipcSend({
       type: 'MESSAGE_RECEIVED',
@@ -95,6 +100,9 @@ export class MessageHandler {
       messageId: msg.messageId,
       textPreview: msg.text.slice(0, 100),
     })
+
+    // Notify web subscribers that this bot started replying
+    this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId: msg.chatId, on: true })
 
     // Hand heartbeat ownership to the main process (immune to worker event-loop starvation)
     this.ipcSend({ type: 'HEARTBEAT_START', chatId: msg.chatId, replyToMessageId: msg.messageId })
@@ -121,7 +129,17 @@ export class MessageHandler {
       const { tokensUsed } = await this.claude.chatStream(
         history,
         msg.text,
-        (chunk) => { reply += chunk },
+        (chunk) => {
+          reply += chunk
+          // Tee the chunk to web subscribers of this chatId
+          this.ipcSend({
+            type: 'WEB_REPLY_CHUNK',
+            botId: this.botId,
+            chatId: msg.chatId,
+            messageId: streamMessageId,
+            chunk,
+          })
+        },
         0,
         extraSystemContext,
         (toolName, inputSummary, claudeReasoning) => {
@@ -156,6 +174,17 @@ export class MessageHandler {
         elapsedMs,
       })
 
+      // Notify web subscribers that the reply is complete
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId: msg.chatId,
+        messageId: streamMessageId,
+        tokensUsed,
+        elapsedMs,
+        fullText: reply,
+      })
+
       logger.info(`Replied in ${elapsedMs}ms, ${tokensUsed} tokens`, this.botId)
 
       // Stage 8: Memory extraction (fire-and-forget, inspired by claude-code's
@@ -179,11 +208,21 @@ export class MessageHandler {
         code: 'HANDLE_ERROR',
         message: String(err),
       })
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId: msg.chatId,
+        messageId: streamMessageId,
+        tokensUsed: 0,
+        elapsedMs: Date.now() - startTime,
+        fullText: '抱歉，处理您的消息时出现错误，请稍后再试。',
+      })
       await this.sender
         .sendText(msg.chatId, msg.messageId, '抱歉，处理您的消息时出现错误，请稍后再试。')
         .catch(() => undefined)
     } finally {
       this.ipcSend({ type: 'HEARTBEAT_STOP', chatId: msg.chatId })
+      this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId: msg.chatId, on: false })
       logger.diag(`HEARTBEAT_STOP sent for chat=${msg.chatId}`, this.botId)
     }
   }
@@ -209,14 +248,27 @@ export class MessageHandler {
     }
 
     this.ipcSend({ type: 'HEARTBEAT_START', chatId, replyToMessageId: replyToMessageId ?? null })
+    this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId, on: true })
     logger.diag(`HEARTBEAT_START sent for delegated chat=${chatId}`, this.botId)
+
+    const startTime = Date.now()
+    const streamMessageId = randomUUID()
 
     try {
       let reply = ''
       const { tokensUsed } = await this.claude.chatStream(
         history,
         text,
-        (chunk) => { reply += chunk },
+        (chunk) => {
+          reply += chunk
+          this.ipcSend({
+            type: 'WEB_REPLY_CHUNK',
+            botId: this.botId,
+            chatId,
+            messageId: streamMessageId,
+            chunk,
+          })
+        },
         0,
         extraCtx,
         (toolName, inputSummary, claudeReasoning) => {
@@ -229,11 +281,22 @@ export class MessageHandler {
       )
 
       this.store.append(chatId, text, reply)
+      const elapsedMs = Date.now() - startTime
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId,
+        messageId: streamMessageId,
+        tokensUsed,
+        elapsedMs,
+        fullText: reply,
+      })
       await this.sender.sendText(chatId, null, reply)
 
       logger.info(`Delegated reply sent (from=${fromBotId}), ${tokensUsed} tokens`, this.botId)
     } finally {
       this.ipcSend({ type: 'HEARTBEAT_STOP', chatId })
+      this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId, on: false })
       logger.diag(`HEARTBEAT_STOP sent for delegated chat=${chatId}`, this.botId)
       // Notify the delegating bot to stop its progress-inquiry timer
       if (delegationId) {
@@ -256,6 +319,138 @@ export class MessageHandler {
     })
 
     logger.info(`Inject reply sent, ${tokensUsed} tokens`, this.botId)
+  }
+
+  /**
+   * Handle a message originating from the Web IM frontend.
+   * Skips Feishu policy gates (web is its own surface, not bound by group/DM rules)
+   * but reuses the same ConversationStore + claude.chatStream + memory pipeline,
+   * so Web and Feishu on the same chatId share history seamlessly.
+   *
+   * Streams chunks back to web subscribers via WEB_REPLY_CHUNK and signals
+   * completion with WEB_REPLY_DONE.
+   */
+  async handleWebMessage(
+    chatId: string,
+    userId: string,
+    text: string,
+    streamMessageId: string,
+    routeMode: 'default' | 'direct_self' = 'default',
+    webHistory: ConversationTurn[] = [],
+  ): Promise<void> {
+    logger.info(`Web message received: chatId=${chatId} from=${userId} text="${text.slice(0, 100)}"`, this.botId)
+
+    const startTime = Date.now()
+    this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId, on: true })
+    this.ipcSend({ type: 'HEARTBEAT_START', chatId, replyToMessageId: null, messageId: streamMessageId })
+
+    try {
+      const memoryHistory = this.store.get(chatId)
+      const history = routeMode === 'direct_self'
+        ? []
+        : memoryHistory.length > 0
+          ? memoryHistory
+          : webHistory
+      const effectiveText = routeMode === 'direct_self'
+        ? [
+            '【群聊直达发言】',
+            `你的 Agent ID 是：${this.botId}`,
+            '请直接回答用户原始请求中属于你自己的部分。',
+            '如果用户要求自我介绍，请用第一人称介绍你的职责、你能产出什么、用户何时应该找你。',
+            '禁止回答“已完成”“已在群里完成”“我已经介绍过”等完成状态句。',
+            '禁止代表其他 Agent 发言，禁止委托给其他 Agent。',
+            '',
+            `用户原始请求：${text}`,
+          ].join('\n')
+        : text
+
+      let extraSystemContext =
+        `<current_session>\nchat_id: ${chatId}\nsender_user_id: ${userId}\ncurrent_time: ${formatCurrentTime()}\nsource: web\n</current_session>`
+      if (routeMode === 'direct_self') {
+        extraSystemContext +=
+          '\n\n<web_group_direct_reply>\n' +
+          '这是一条 Web 群聊直达消息，你是被要求直接发言的成员之一。\n' +
+          '只代表你自己回答，只介绍/交付你自己的部分。\n' +
+          '不要替其他 Agent 总结，不要说“已完成”，不要再委托给其他 Agent。\n' +
+          '如果用户要求“各个/每个/所有 Agent”回答，你只回答属于你自己的那一份。\n' +
+          '</web_group_direct_reply>'
+      }
+      if (this.config.behavior.injectWorkspaceContext) {
+        const workspaceCtx = await buildWorkspaceContext(this.botId).catch(() => undefined)
+        if (workspaceCtx) extraSystemContext += '\n\n' + workspaceCtx
+      }
+
+      let reply = ''
+      const { tokensUsed } = await this.claude.chatStream(
+        history,
+        effectiveText,
+        (chunk) => {
+          reply += chunk
+          this.ipcSend({
+            type: 'WEB_REPLY_CHUNK',
+            botId: this.botId,
+            chatId,
+            messageId: streamMessageId,
+            chunk,
+          })
+        },
+        0,
+        extraSystemContext,
+        (toolName, inputSummary, claudeReasoning) => {
+          logger.diag(`Tool starting: ${toolName}(${inputSummary.slice(0, 60)})`, this.botId)
+          if (claudeReasoning) {
+            this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId, reasoning: claudeReasoning })
+          }
+        },
+        () => { this.ipcSend({ type: 'HEARTBEAT_UPDATE', chatId, reasoning: '正在生成回复...' }) },
+      )
+
+      this.store.append(chatId, effectiveText, reply)
+      if (routeMode !== 'direct_self') {
+        this.store
+          .compactIfNeeded(chatId, (turns) => this.claude.summarize(turns))
+          .catch(() => undefined)
+      }
+
+      const elapsedMs = Date.now() - startTime
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId,
+        messageId: streamMessageId,
+        tokensUsed,
+        elapsedMs,
+        fullText: reply,
+      })
+
+      logger.info(`Web reply complete in ${elapsedMs}ms, ${tokensUsed} tokens`, this.botId)
+
+      if (this.config.behavior.memoryExtraction && this.memory) {
+        this.claude
+          .extractMemory(text, reply)
+          .then((extracted) => {
+            if (extracted && this.memory) {
+              this.memory.append(extracted)
+              return this.memory.save()
+            }
+          })
+          .catch(() => undefined)
+      }
+    } catch (err) {
+      logger.error(`Failed to handle web message: ${err}`, this.botId)
+      this.ipcSend({
+        type: 'WEB_REPLY_DONE',
+        botId: this.botId,
+        chatId,
+        messageId: streamMessageId,
+        tokensUsed: 0,
+        elapsedMs: Date.now() - startTime,
+        fullText: `抱歉，处理消息时出现错误：${String(err).slice(0, 200)}`,
+      })
+    } finally {
+      this.ipcSend({ type: 'HEARTBEAT_STOP', chatId })
+      this.ipcSend({ type: 'WEB_TYPING', botId: this.botId, chatId, on: false })
+    }
   }
 
   // ─── Gate ────────────────────────────────────────────────────────────────

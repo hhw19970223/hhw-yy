@@ -10,19 +10,12 @@
  * back to the Gateway via FEISHU_SEND / FEISHU_REACTION_* IPC messages.
  */
 import { readFile } from 'fs/promises'
-import * as lark from '@larksuiteoapi/node-sdk'
 import { RootConfigSchema, type LoadedSubAgentConfig } from '../config/schema.js'
 import { loadAgentPrompt } from '../config/agentPrompt.js'
 import { initWorkspace } from '../workspace/WorkspaceInit.js'
-import { IpcSender } from '../feishu/IpcSender.js'
-import { ClaudeClient } from '../llm/ClaudeClient.js'
-import { ToolRegistry } from '../tools/ToolRegistry.js'
-import { createDelegateTools } from '../tools/feishu/delegate.js'
-import { createSendMessageTool } from '../tools/feishu/sendMessage.js'
-import { createBitableTools } from '../tools/feishu/bitable.js'
-import { createWorkspaceTools } from '../tools/workspace/index.js'
-import { createMemoryTools } from '../tools/memory/index.js'
-import { createShellTools } from '../tools/shell/index.js'
+import { FeishuClient } from '../feishu/FeishuClient.js'
+import { Sender } from '../feishu/reply/Sender.js'
+import { ClaudeCodeClient } from '../llm/ClaudeCodeClient.js'
 import { ConversationStore } from '../session/ConversationStore.js'
 import { MemoryStore } from '../memory/MemoryStore.js'
 import { MessageHandler } from '../feishu/MessageHandler.js'
@@ -94,13 +87,6 @@ async function main(): Promise<void> {
     config = { ...subAgent, mainAgentId, configPath: rootConfigPath }
   }
 
-  // Resolve Claude API key
-  const apiKey = config.claude.apiKey ?? process.env.ANTHROPIC_API_KEY
-  if (!apiKey) {
-    ipcSend({ type: 'FATAL', botId, code: 'MISSING_API_KEY', message: 'Claude API key not found in config or ANTHROPIC_API_KEY env' })
-    process.exit(1)
-  }
-
   // Initialize full workspace structure (idempotent)
   // - agents/{botId}/: IDENTITY.md, SOUL.md, AGENTS.md, TOOLS.md, memory/
   // - workspace/{botId}/: bot private working directory
@@ -110,16 +96,17 @@ async function main(): Promise<void> {
   // Load system prompt from agents/{botId}/ markdown files
   const systemPrompt = await loadAgentPrompt(botId)
 
-  // Initialize components
-  const sender = new IpcSender(ipcSend)
+  // Initialize direct Feishu connection in this Agent process.
+  // The main process no longer owns Feishu WebSocket/API I/O.
+  const feishu = new FeishuClient(botId, config.feishu)
+  const sender = new Sender(feishu.client, botId, config.behavior.chunkSize)
 
   // Memory — markdown daily notes in agents/{botId}/memory/
   // Must initialize before tools so createMemoryTools can reference it
   const memory = new MemoryStore()
   await memory.load(Paths.agentMemoryDir(botId))
 
-  // Track the Feishu messageId of the message currently being processed so
-  // delegate_to_agent can pass it through to the receiving agent for reactions.
+  // Track the Feishu messageId of the message currently being processed.
   let currentMessageId: string | undefined
 
   // ── Delegation progress-inquiry timers ───────────────────────────────────
@@ -128,54 +115,19 @@ async function main(): Promise<void> {
   // Cleared when Manager delivers DELEGATION_COMPLETE (target task finished).
   const delegationTimers = new Map<string, NodeJS.Timeout>()
 
-  function onDelegate(
-    delegationId: string,
-    targetBotId: string,
-    chatId: string,
-    replyToMessageId: string | undefined,
-  ): void {
-    logger.diag(`Delegation timer armed: id=${delegationId} target=${targetBotId}`, botId)
-    const timer = setInterval(() => {
-      logger.diag(`Delegation inquiry firing: id=${delegationId} target=${targetBotId}`, botId)
-      ipcSend({
-        type: 'DELEGATE_TO',
-        targetBotId,
-        chatId,
-        fromBotId: botId,
-        text: `[进度询问] 请简要汇报当前任务进度：已完成什么，遇到什么问题，下一步计划是什么。`,
-        replyToMessageId,
-      })
-    }, 2 * 60_000)
-    delegationTimers.set(delegationId, timer)
-  }
-
-  // Delegation tools are always available — agents need to be able to collaborate
-  const tools = new ToolRegistry()
-  for (const def of createDelegateTools(botId, ipcSend, () => currentMessageId, onDelegate)) tools.register(def)
-  tools.register(createSendMessageTool(ipcSend, () => currentMessageId))
-  // Workspace tools — read/write workspace/{botId}/ and workspace/common/
-  for (const def of createWorkspaceTools(botId)) tools.register(def)
-  // Memory tools — read/write MEMORY.md and daily notes
-  for (const def of createMemoryTools(botId, memory)) tools.register(def)
-  // Shell tool — execute commands with cwd locked to workspace
-  for (const def of createShellTools(botId)) tools.register(def)
-
-  // Bitable tools are opt-in via behavior.enableTools
-  if (config.behavior.enableTools) {
-    const larkClient = new lark.Client({
-      appId: config.feishu.appId,
-      appSecret: config.feishu.appSecret,
-    })
-    for (const def of createBitableTools(larkClient)) tools.register(def)
-  }
-
-  const claude = new ClaudeClient({
-    apiKey,
-    baseUrl: config.claude.baseUrl,
+  const claude = new ClaudeCodeClient({
+    botId,
     model: config.claude.model,
-    systemPrompt,
-    maxTokens: config.claude.maxTokens,
-    tools,
+    systemPrompt: [
+      systemPrompt,
+      '',
+      '<runtime>',
+      '你正在 Claude Code CLI 内运行。你可以直接使用 Claude Code 内置文件与 Bash 能力操作允许目录。',
+      '不要调用 delegate_to_agent、send_message、workspace_*、memory_*、shell_exec、bitable_* 这些旧版自定义工具名；当前主执行链路不再注册这些 Anthropic SDK tools。',
+      '需要记录长期记忆时，直接编辑 agents/{botId}/MEMORY.md 或 agents/{botId}/memory/YYYY-MM-DD.md。',
+      '需要产出工作文件时，直接写入 workspace/{botId}/ 或 workspace/common/。',
+      '</runtime>',
+    ].join('\n'),
   })
 
   const persistPath = config.behavior.persistHistory
@@ -190,15 +142,6 @@ async function main(): Promise<void> {
   setProcessLabel(`worker:${botId}`)
   setupErrorLog('error')
   setupDiagLog('logs')   // append only; main process already truncated at startup
-
-  // Signal ready — no Feishu connection needed; the Gateway handles that
-  ipcSend({ type: 'READY', botId, pid: process.pid, connectedAt: new Date().toISOString() })
-
-  // Periodic status heartbeat + memory flush
-  const statusInterval = setInterval(() => {
-    ipcSend({ type: 'STATUS_UPDATE', botId, activeChatCount: store.stats().totalChats })
-    memory.save().catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
-  }, 30_000)
 
   // ─── Per-chatId serialization queue ──────────────────────────────────────
   // Different chatIds run in parallel (independent state, no blocking).
@@ -216,6 +159,27 @@ async function main(): Promise<void> {
     })
   }
 
+  feishu.onMessage((message) => {
+    handler.acknowledge(message)
+    enqueue(message.chatId, () => {
+      currentMessageId = message.messageId
+      return handler.handle(message).finally(() => { currentMessageId = undefined })
+    })
+  })
+
+  await feishu.connect()
+  const botOpenId = await feishu.getBotOpenId()
+  if (botOpenId) handler.setBotOpenId(botOpenId)
+
+  // Signal ready after the Agent's own Feishu connection is established.
+  ipcSend({ type: 'READY', botId, pid: process.pid, connectedAt: new Date().toISOString() })
+
+  // Periodic status heartbeat + memory flush
+  const statusInterval = setInterval(() => {
+    ipcSend({ type: 'STATUS_UPDATE', botId, activeChatCount: store.stats().totalChats })
+    memory.save().catch((err) => logger.warn(`Memory save failed: ${err}`, botId))
+  }, 30_000)
+
   // ─── IPC message handler ──────────────────────────────────────────────────
   process.on('message', (raw: unknown) => {
     const msg = raw as DownwardMessage
@@ -225,15 +189,11 @@ async function main(): Promise<void> {
         break
 
       case 'STOP':
-        void gracefulShutdown(statusInterval, memory)
+        void gracefulShutdown(statusInterval, memory, feishu)
         break
 
       case 'FEISHU_MESSAGE':
-        handler.acknowledge(msg.message)  // immediate — fires before queue
-        enqueue(msg.message.chatId, () => {
-          currentMessageId = msg.message.messageId
-          return handler.handle(msg.message).finally(() => { currentMessageId = undefined })
-        })
+        logger.warn('Ignoring FEISHU_MESSAGE from main process; worker owns Feishu directly', botId)
         break
 
       case 'DELEGATE_MESSAGE':
@@ -254,6 +214,12 @@ async function main(): Promise<void> {
         handler.setBotOpenId(msg.botOpenId)
         break
 
+      case 'FEISHU_SEND_DIRECT':
+        sender
+          .sendText(msg.chatId, msg.replyToMessageId, msg.text)
+          .catch((err) => logger.warn(`Direct Feishu send failed: ${err}`, botId))
+        break
+
       case 'INJECT_MESSAGE':
         handler
           .handleInjected(msg.chatId, msg.userId, msg.text, msg.syntheticMsgId)
@@ -261,12 +227,23 @@ async function main(): Promise<void> {
             ipcSend({ type: 'ERROR', botId, code: 'INJECT_ERROR', message: String(err) })
           })
         break
+
+      case 'WEB_MESSAGE':
+        enqueue(msg.chatId, async () => {
+          if (msg.startDelayMs && msg.startDelayMs > 0) {
+            await sleep(msg.startDelayMs)
+          }
+          return handler.handleWebMessage(msg.chatId, msg.userId, msg.text, msg.messageId, msg.routeMode, msg.history).catch((err) => {
+            ipcSend({ type: 'ERROR', botId, code: 'WEB_HANDLE_ERROR', message: String(err) })
+          })
+        })
+        break
     }
   })
 
   // ─── Signal handling ──────────────────────────────────────────────────────
-  process.on('SIGTERM', () => void gracefulShutdown(statusInterval, memory))
-  process.on('SIGINT',  () => void gracefulShutdown(statusInterval, memory))
+  process.on('SIGTERM', () => void gracefulShutdown(statusInterval, memory, feishu))
+  process.on('SIGINT',  () => void gracefulShutdown(statusInterval, memory, feishu))
 
   // ─── Unhandled rejection guard ────────────────────────────────────────────
   process.on('unhandledRejection', (reason) => {
@@ -275,12 +252,18 @@ async function main(): Promise<void> {
   })
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 async function gracefulShutdown(
   statusInterval: NodeJS.Timeout,
   memory: MemoryStore,
+  feishu?: FeishuClient,
 ): Promise<void> {
   clearInterval(statusInterval)
   await memory.save().catch(() => undefined)
+  await feishu?.disconnect().catch(() => undefined)
   process.exit(0)
 }
 

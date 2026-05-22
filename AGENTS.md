@@ -1,8 +1,8 @@
-# SL — 项目说明（供 Claude Code 使用）
+# SL — 项目说明（供 Codex 使用）
 
 ## 项目是什么
 
-多机器人飞书网关服务。将多个飞书机器人各自接入一个 Claude 大模型实例，实现在飞书私聊/群聊中与 AI 对话。同时暴露一个 MCP Server（stdio），让 Claude Code 可以通过工具调用管理所有机器人。
+多机器人飞书网关服务。将多个飞书机器人各自接入一个 Codex 大模型实例，实现在飞书私聊/群聊中与 AI 对话。同时暴露一个 MCP Server（stdio），让 Codex 可以通过工具调用管理所有机器人。
 
 ## 运行时进程结构
 
@@ -11,16 +11,16 @@
 ├── Gateway          — 每个 Bot 一条飞书 WebSocket 长连接
 ├── Manager          — fork 子进程、心跳检测、崩溃重启
 ├── HttpServer       — GET /health  /bots  /bots/:id
-└── McpServer        — stdio，供 Claude Code 调用
+└── McpServer        — stdio，供 Codex 调用
 
 子进程 (src/process/worker.ts，每个 Bot 独立 fork)
-├── MessageHandler   — 过滤策略 → Claude 流式对话 → 飞书回复
+├── MessageHandler   — 过滤策略 → Codex 流式对话 → 飞书回复
 ├── ClaudeClient     — 流式 / 非流式调用，含指数退避重试
 ├── ConversationStore — 每个 chatId 独立对话历史，支持 JSONL 持久化 + 自动压缩
 └── MemoryStore      — Bot 的 Markdown 日记式记忆，每 30s 刷盘到 agents/{botId}/memory/
 ```
 
-主进程与子进程通过 Node.js IPC 通信（`process.send` / `child.send`）。飞书收发消息全部走主进程的 Gateway，子进程只处理 Claude 调用和业务逻辑。
+主进程与子进程通过 Node.js IPC 通信（`process.send` / `child.send`）。飞书收发消息全部走主进程的 Gateway，子进程只处理 Codex 调用和业务逻辑。
 
 ## 目录结构
 
@@ -41,7 +41,7 @@ src/
 │   └── ipc/                  # IPC 消息类型定义 + 收发工具函数
 ├── feishu/
 │   ├── FeishuClient.ts       # 飞书 HTTP API 封装（发消息、加反应等）
-│   ├── MessageHandler.ts     # 消息过滤门控 → Claude 调用 → 回复
+│   ├── MessageHandler.ts     # 消息过滤门控 → Codex 调用 → 回复
 │   ├── IpcSender.ts          # 子进程向主进程发送 FEISHU_SEND 等 IPC 消息
 │   └── reply/
 │       ├── Formatter.ts      # 回复文本格式化（分块、截断）
@@ -67,9 +67,9 @@ src/
 关键字段：
 - `gateway.port` — HTTP server 端口，默认 4000
 - `agents[].feishu.appId/appSecret` — 飞书应用凭证
-- `agents[].claude.apiKey` — Claude API Key，可省略改用 `ANTHROPIC_API_KEY` 环境变量
-- `agents[].claude.baseUrl` — API 根地址，**不含 `/v1`**（SDK 自动拼接）
-- `agents[].claude.model` — 模型名，如 `claude-opus-4-6`、`claude-sonnet-4-6`
+- `agents[].Codex.apiKey` — Codex API Key，可省略改用 `ANTHROPIC_API_KEY` 环境变量
+- `agents[].Codex.baseUrl` — API 根地址，**不含 `/v1`**（SDK 自动拼接）
+- `agents[].Codex.model` — 模型名，如 `Codex-opus-4-6`、`Codex-sonnet-4-6`
 - `agents[].subAgents[]` — 同结构，每个子 Agent 是独立飞书应用
 
 ## 常用命令
@@ -95,7 +95,7 @@ npm run pm2:log
 
 4. **心跳机制** Manager 每 `heartbeatIntervalMs` 向各子进程发 PING，超过 `heartbeatTimeoutMs` 未收到 PONG 则 SIGKILL 后重启。
 
-5. **消息过滤顺序**（MessageHandler.handle）：消息类型 → 策略门控（私聊/群聊/allowlist/denylist/@mention）→ 自消息过滤 → typing 反应 → Claude 调用。
+5. **消息过滤顺序**（MessageHandler.handle）：消息类型 → 策略门控（私聊/群聊/allowlist/denylist/@mention）→ 自消息过滤 → typing 反应 → Codex 调用。
 
 6. **飞书消息收发分离**：所有飞书 API 调用只在主进程（Gateway/GatewayConnection）执行。子进程通过 IPC 发 `FEISHU_SEND` / `FEISHU_REACTION_*` 消息委托主进程发送。
 

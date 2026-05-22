@@ -1,5 +1,5 @@
 {
-  "name": "hhw-yy",
+  "name": "SL",
   "version": "0.1.0",
   "description": "Multi-bot Feishu gateway service with MCP server for Claude Code",
   "type": "module",
@@ -19,19 +19,21 @@
     "service:status": "bash service.sh status",
     "service:log": "bash service.sh log",
     "pm2:start": "pm2 start ecosystem.config.cjs",
-    "pm2:stop": "pm2 stop hhw-yy",
-    "pm2:restart": "pm2 restart hhw-yy",
+    "pm2:stop": "pm2 stop SL",
+    "pm2:restart": "pm2 restart SL",
     "pm2:status": "pm2 status",
-    "pm2:log": "pm2 logs hhw-yy"
+    "pm2:log": "pm2 logs SL"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
     "@larksuiteoapi/node-sdk": "^1.60.0",
     "@modelcontextprotocol/sdk": "^1.9.0",
+    "ws": "^8.20.1",
     "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.13",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

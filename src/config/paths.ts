@@ -4,12 +4,14 @@ import { join } from 'path'
 const home = homedir()
 
 export const Paths = {
-  dataDir: join(home, '.local', 'share', 'hhw-yy'),
-  logsDir: join(home, '.local', 'share', 'hhw-yy', 'logs'),
-  conversationsDir: join(home, '.local', 'share', 'hhw-yy', 'conversations'),
-  botLog: (botId: string) => join(home, '.local', 'share', 'hhw-yy', 'logs', `${botId}.log`),
+  dataDir: join(home, '.local', 'share', 'SL'),
+  logsDir: join(home, '.local', 'share', 'SL', 'logs'),
+  conversationsDir: join(home, '.local', 'share', 'SL', 'conversations'),
+  webImDb: join(home, '.local', 'share', 'SL', 'web-im.sqlite'),
+  webUploadsDir: join(home, '.local', 'share', 'SL', 'uploads'),
+  botLog: (botId: string) => join(home, '.local', 'share', 'SL', 'logs', `${botId}.log`),
   conversationFile: (botId: string, chatId: string) =>
-    join(home, '.local', 'share', 'hhw-yy', 'conversations', botId, `${chatId}.jsonl`),
+    join(home, '.local', 'share', 'SL', 'conversations', botId, `${chatId}.jsonl`),
   workspaceBot: (botId: string) => join(process.cwd(), 'workspace', botId),
   workspaceCommon: join(process.cwd(), 'workspace', 'common'),
   agentDir: (botId: string) => join(process.cwd(), 'agents', botId),

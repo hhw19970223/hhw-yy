@@ -1,7 +1,7 @@
 module.exports = {
   apps: [
     {
-      name: 'hhw-yy',
+      name: 'SL',
       script: 'src/main.ts',
       interpreter: 'node',
       interpreter_args: '--import tsx/esm',

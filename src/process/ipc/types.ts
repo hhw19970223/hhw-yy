@@ -1,4 +1,5 @@
 import type { FeishuMessage } from '../../feishu/FeishuClient.js'
+import type { ConversationTurn } from '../../session/ConversationStore.js'
 
 // ─── Manager → Child (Downward) ───────────────────────────────────────────
 
@@ -11,10 +12,14 @@ export type DownwardMessage =
   | { type: 'FEISHU_MESSAGE'; message: FeishuMessage }
   /** Gateway → Worker: bot's own open_id, used for self-message + @mention checks */
   | { type: 'SET_BOT_INFO'; botOpenId: string }
+  /** Manager → Worker: direct Feishu send request, used for progress heartbeat in direct-worker mode */
+  | { type: 'FEISHU_SEND_DIRECT'; chatId: string; replyToMessageId: string | null; text: string }
   /** Manager → Worker: a task delegated by another agent */
   | { type: 'DELEGATE_MESSAGE'; chatId: string; fromBotId: string; text: string; replyToMessageId?: string; delegationId?: string }
   /** Manager → Worker: the delegated task has completed — stop the progress-inquiry timer */
   | { type: 'DELEGATION_COMPLETE'; delegationId: string }
+  /** Web client → Worker: a message originating from the browser IM */
+  | { type: 'WEB_MESSAGE'; chatId: string; userId: string; text: string; messageId: string; routeMode?: 'default' | 'direct_self'; startDelayMs?: number; history?: ConversationTurn[] }
 
 // ─── Child → Manager (Upward) ─────────────────────────────────────────────
 
@@ -47,13 +52,19 @@ export type UpwardMessage =
    * The main process runs the 30s timer so it is immune to event-loop starvation
    * caused by the Anthropic streaming for-await microtask loop in the worker.
    */
-  | { type: 'HEARTBEAT_START'; chatId: string; replyToMessageId: string | null }
+  | { type: 'HEARTBEAT_START'; chatId: string; replyToMessageId: string | null; messageId?: string }
   | { type: 'HEARTBEAT_UPDATE'; chatId: string; reasoning: string }
   | { type: 'HEARTBEAT_STOP'; chatId: string }
   /** Worker → Manager: delegate a task to another agent's worker */
   | { type: 'DELEGATE_TO'; targetBotId: string; chatId: string; fromBotId: string; text: string; replyToMessageId?: string; delegationId?: string }
   /** Worker → Manager: delegated task complete — notify the delegating bot to stop its inquiry timer */
   | { type: 'DELEGATE_DONE'; fromBotId: string; delegatorBotId: string; delegationId: string }
+  /** Worker → Manager: a streamed text delta destined for any web subscriber of this chatId */
+  | { type: 'WEB_REPLY_CHUNK'; botId: string; chatId: string; messageId: string; chunk: string }
+  /** Worker → Manager: streaming reply finished, with summary stats */
+  | { type: 'WEB_REPLY_DONE'; botId: string; chatId: string; messageId: string; tokensUsed: number; elapsedMs: number; fullText: string }
+  /** Worker → Manager: typing indicator on/off for a chatId (web side displays a spinner) */
+  | { type: 'WEB_TYPING'; botId: string; chatId: string; on: boolean }
 
 export function isUpwardMessage(msg: unknown): msg is UpwardMessage {
   return typeof msg === 'object' && msg !== null && 'type' in msg

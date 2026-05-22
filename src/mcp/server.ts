@@ -29,7 +29,7 @@ type ToolDefinition = {
 
 export function startMcpServer(manager: Manager): Server {
   const server = new Server(
-    { name: 'hhw-yy', version: '0.1.0' },
+    { name: 'SL', version: '0.1.0' },
     { capabilities: { tools: {} } },
   )
 

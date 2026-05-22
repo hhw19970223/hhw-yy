@@ -10,7 +10,7 @@ import { createIpcReceiver } from './ipc/receiver.js'
 import { sendToChild } from './ipc/sender.js'
 import type { UpwardMessage } from './ipc/types.js'
 import { logger } from '../shared/logger.js'
-import type { Gateway } from '../gateway/Gateway.js'
+import type { ConversationTurn } from '../session/ConversationStore.js'
 
 const MAX_RESTARTS = 10
 const RESTART_DELAY_MS = 1000
@@ -27,7 +27,16 @@ interface ProgressSession {
   replyToMessageId: string | null
   botId: string
   chatId: string
+  messageId?: string
 }
+
+export type WebEvent =
+  | { type: 'chunk'; botId: string; chatId: string; messageId: string; chunk: string }
+  | { type: 'done'; botId: string; chatId: string; messageId: string; tokensUsed: number; elapsedMs: number; fullText: string }
+  | { type: 'typing'; botId: string; chatId: string; on: boolean }
+  | { type: 'agent_status'; botId: string; status: BotStatus }
+
+export type WebEventListener = (event: WebEvent) => void
 
 export class Manager {
   private bots = new Map<string, BotHandle>()
@@ -35,23 +44,12 @@ export class Manager {
   private heartbeatTimer: NodeJS.Timeout | null = null
   /** Progress sessions keyed by "botId:chatId" — timer lives here, not in worker */
   private progressSessions = new Map<string, ProgressSession>()
+  /** Web event subscribers — receive every chunk/done/typing/status event regardless of chatId. */
+  private webListeners = new Set<WebEventListener>()
 
   constructor(
-    private readonly gateway?: Gateway,
     private readonly heartbeatConfig?: HeartbeatConfig,
   ) {
-    if (gateway) {
-      // Route inbound Feishu messages from the Gateway to the correct worker
-      gateway.setMessageHandler((botId, msg) => {
-        const handle = this.bots.get(botId)
-        if (!handle?.process || handle.status !== BotStatus.READY) {
-          logger.warn(`Dropping message for bot ${botId}: not ready`, botId)
-          return
-        }
-        sendToChild(handle.process, { type: 'FEISHU_MESSAGE', message: msg })
-      })
-    }
-
     if (heartbeatConfig) {
       this.startHeartbeat(heartbeatConfig.intervalMs, heartbeatConfig.timeoutMs)
     }
@@ -156,6 +154,41 @@ export class Manager {
     return this.bots.get(botId)?.config ?? null
   }
 
+  /**
+   * Forward a Web IM message to the target bot's worker. Returns the
+   * server-allocated streamMessageId immediately; chunks/done events will
+   * arrive on the web event bus.
+   */
+  sendWebMessage(
+    botId: string,
+    chatId: string,
+    userId: string,
+    text: string,
+    routeMode: 'default' | 'direct_self' = 'default',
+    startDelayMs = 0,
+    history?: ConversationTurn[],
+  ): string {
+    const handle = this.bots.get(botId)
+    if (!handle?.process || handle.status !== BotStatus.READY) {
+      throw new Error(`Bot ${botId} is not ready`)
+    }
+    const messageId = randomUUID()
+    sendToChild(handle.process, { type: 'WEB_MESSAGE', chatId, userId, text, messageId, routeMode, startDelayMs, history })
+    return messageId
+  }
+
+  /** Subscribe to all web events. Returns an unsubscribe function. */
+  subscribeWeb(listener: WebEventListener): () => void {
+    this.webListeners.add(listener)
+    return () => this.webListeners.delete(listener)
+  }
+
+  private emitWeb(event: WebEvent): void {
+    for (const listener of this.webListeners) {
+      try { listener(event) } catch (err) { logger.warn(`Web listener error: ${err}`) }
+    }
+  }
+
   async injectMessage(
     botId: string,
     chatId: string,
@@ -250,6 +283,12 @@ export class Manager {
     child.on('message', receiver)
 
     child.on('exit', (code, signal) => {
+      this.failProgressSessionsForBot(
+        handle.botId,
+        handle.status === BotStatus.STOPPING || code === 0
+          ? '服务正在重启，刚才这次请求已被中断，请重新发送。'
+          : `Agent 进程异常退出（code=${code}, signal=${signal}），刚才这次请求已中断，请重新发送。`,
+      )
       handle.pid = null
       handle.process = null
       handle.pendingPingId = null
@@ -257,11 +296,13 @@ export class Manager {
 
       if (handle.status === BotStatus.STOPPING || code === 0) {
         handle.status = BotStatus.STOPPED
+        this.emitWeb({ type: 'agent_status', botId: handle.botId, status: BotStatus.STOPPED })
         logger.info(`Sub-agent stopped cleanly`, handle.botId)
         return
       }
 
       logger.warn(`Sub-agent exited unexpectedly (code=${code}, signal=${signal})`, handle.botId)
+      this.emitWeb({ type: 'agent_status', botId: handle.botId, status: BotStatus.STARTING })
       this.scheduleRestart(handle)
     })
 
@@ -298,14 +339,8 @@ export class Manager {
       case 'READY':
         handle.status = BotStatus.READY
         handle.restartCount = 0 // reset on successful startup
+        this.emitWeb({ type: 'agent_status', botId: handle.botId, status: BotStatus.READY })
         logger.info(`Sub-agent is ready`, handle.botId)
-        // Deliver bot's own open_id so the worker can filter self-messages and @mentions
-        if (this.gateway && handle.process) {
-          const botOpenId = this.gateway.getBotOpenId(handle.botId)
-          if (botOpenId) {
-            sendToChild(handle.process, { type: 'SET_BOT_INFO', botOpenId })
-          }
-        }
         break
 
       case 'STATUS_UPDATE':
@@ -329,6 +364,7 @@ export class Manager {
           replyToMessageId: msg.replyToMessageId,
           botId: handle.botId,
           chatId: msg.chatId,
+          messageId: msg.messageId,
         }
         this.progressSessions.set(key, session)
         logger.diag(`Progress session started: key=${key}`)
@@ -384,30 +420,15 @@ export class Manager {
         break
 
       case 'FEISHU_SEND':
-        logger.diag(`FEISHU_SEND from bot=${handle.botId} chat=${msg.chatId} len=${msg.text.length}`)
-        if (this.gateway) {
-          this.gateway
-            .sendText(handle.botId, msg.chatId, msg.replyToMessageId, msg.text)
-            .catch((err) => logger.error(`Gateway sendText failed: ${err}`, handle.botId))
-        } else {
-          logger.diag(`FEISHU_SEND dropped — no gateway`, handle.botId)
-        }
+        logger.warn(`FEISHU_SEND ignored in direct-worker Feishu mode; bot=${handle.botId} chat=${msg.chatId}`, handle.botId)
         break
 
       case 'FEISHU_REACTION_ADD':
-        if (this.gateway) {
-          this.gateway
-            .addReaction(handle.botId, msg.messageId, msg.reactionType)
-            .catch((err) => logger.error(`Gateway addReaction failed: ${err}`, handle.botId))
-        }
+        logger.warn(`FEISHU_REACTION_ADD ignored in direct-worker Feishu mode`, handle.botId)
         break
 
       case 'FEISHU_REACTION_REMOVE':
-        if (this.gateway) {
-          this.gateway
-            .removeReaction(handle.botId, msg.messageId, msg.reactionId)
-            .catch((err) => logger.error(`Gateway removeReaction failed: ${err}`, handle.botId))
-        }
+        logger.warn(`FEISHU_REACTION_REMOVE ignored in direct-worker Feishu mode`, handle.botId)
         break
 
       case 'DELEGATE_TO': {
@@ -439,6 +460,26 @@ export class Manager {
         }
         break
       }
+
+      case 'WEB_REPLY_CHUNK':
+        this.emitWeb({ type: 'chunk', botId: msg.botId, chatId: msg.chatId, messageId: msg.messageId, chunk: msg.chunk })
+        break
+
+      case 'WEB_REPLY_DONE':
+        this.emitWeb({
+          type: 'done',
+          botId: msg.botId,
+          chatId: msg.chatId,
+          messageId: msg.messageId,
+          tokensUsed: msg.tokensUsed,
+          elapsedMs: msg.elapsedMs,
+          fullText: msg.fullText,
+        })
+        break
+
+      case 'WEB_TYPING':
+        this.emitWeb({ type: 'typing', botId: msg.botId, chatId: msg.chatId, on: msg.on })
+        break
     }
   }
 
@@ -450,17 +491,40 @@ export class Manager {
     }
   }
 
+  private failProgressSessionsForBot(botId: string, reason: string): void {
+    for (const [key, session] of Array.from(this.progressSessions.entries())) {
+      if (session.botId !== botId) continue
+      this.stopProgressSession(key)
+      this.emitWeb({ type: 'typing', botId, chatId: session.chatId, on: false })
+      if (!session.messageId) continue
+      this.emitWeb({
+        type: 'done',
+        botId,
+        chatId: session.chatId,
+        messageId: session.messageId,
+        tokensUsed: 0,
+        elapsedMs: Date.now() - session.startTime,
+        fullText: reason,
+      })
+    }
+  }
+
   private fireProgressHeartbeat(key: string): void {
     const session = this.progressSessions.get(key)
-    if (!session || !this.gateway) return
+    if (!session) return
     const elapsedSec = Math.round((Date.now() - session.startTime) / 1_000)
     const elapsed = elapsedSec >= 60 ? `${Math.round(elapsedSec / 60)} 分钟` : `${elapsedSec} 秒`
     const activity = session.reasoning || '处理中...'
     const text = `【进度更新】正在执行 ${activity}\n已完成：已运行 ${elapsed}\n下一步：继续执行任务`
     logger.diag(`Progress heartbeat firing: key=${key} elapsed=${elapsedSec}s`)
-    this.gateway
-      .sendText(session.botId, session.chatId, session.replyToMessageId, text)
-      .catch((err) => logger.warn(`Progress heartbeat sendText failed: ${err}`, session.botId))
+    const handle = this.bots.get(session.botId)
+    if (!handle?.process || handle.status !== BotStatus.READY) return
+    sendToChild(handle.process, {
+      type: 'FEISHU_SEND_DIRECT',
+      chatId: session.chatId,
+      replyToMessageId: session.replyToMessageId,
+      text,
+    })
   }
 
   private toSnapshot(h: BotHandle): BotSnapshot {

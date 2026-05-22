@@ -1,0 +1,134 @@
+{
+  "gateway": {
+    "port": 4000,
+    "heartbeatIntervalMs": 15000,
+    "heartbeatTimeoutMs": 5000
+  },
+  "agents": [
+    {
+      "id": "产品经理",
+      "name": "产品经理",
+      "port": 4001,
+      "feishu": {
+        "appId": "cli_a9463688dba35bd3",
+        "appSecret": "5KOQjyKhaH90orIX2tkyIdMHflwZ1mIt"
+      },
+      "claude": {
+        "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+        "baseUrl": "https://llm-developer.fzzixun.com",
+        "model": "claude-opus-4-6",
+        "maxTokens": 8192,
+        "historyLimit": 20
+      },
+      "behavior": {
+        "memoryExtraction": true,
+        "enableTools": true
+      },
+      "subAgents": [
+        {
+          "id": "服务端-agent",
+          "name": "服务端-agent",
+          "port": 4002,
+          "feishu": {
+            "appId": "cli_a94637bb53fadbd2",
+            "appSecret": "5WkuwDJIy23YAMi5PUB1pDGhGCvrFJKe"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-6",
+            "maxTokens": 8192,
+            "historyLimit": 20
+          },
+          "behavior": { "memoryExtraction": true }
+        },
+        {
+          "id": "服务端-业务",
+          "name": "服务端-业务",
+          "port": 4003,
+          "feishu": {
+            "appId": "cli_a946306b8e391bce",
+            "appSecret": "VUwOvEQ3RCTLSrKAx2ez7dsE8HDqvQgd"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-6",
+            "maxTokens": 8192,
+            "historyLimit": 15
+          },
+          "behavior": { "memoryExtraction": true }
+        },
+        {
+          "id": "前端-业务",
+          "name": "前端-业务",
+          "port": 4004,
+          "feishu": {
+            "appId": "cli_a94630e540badbcb",
+            "appSecret": "xVDJ7XzM7q99RMiJb9ObjhpIyxNwYw3C"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-6",
+            "maxTokens": 8192,
+            "historyLimit": 15
+          },
+          "behavior": { "memoryExtraction": true }
+        },
+        {
+          "id": "架构师",
+          "name": "架构师",
+          "port": 4005,
+          "feishu": {
+            "appId": "cli_a94631ae37fbdbca",
+            "appSecret": "LTLj1qXbRifs3gsnsUOnBfVcBkHktZSh"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-6",
+            "maxTokens": 8192,
+            "historyLimit": 15
+          },
+          "behavior": { "memoryExtraction": true },
+          "manages": ["服务端-agent", "服务端-业务", "前端-业务"]
+        },
+        {
+          "id": "运营",
+          "name": "运营",
+          "port": 4006,
+          "feishu": {
+            "appId": "cli_a9463296e0b8dbcd",
+            "appSecret": "wq2VwVP0S7tLE0Xktvh4kfLh4375dvTl"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-6",
+            "maxTokens": 8192,
+            "historyLimit": 10
+          },
+          "behavior": { "memoryExtraction": true }
+        },
+        {
+          "id": "设计师",
+          "name": "设计师",
+          "port": 4007,
+          "feishu": {
+            "appId": "cli_a945e3b21cb85bc6",
+            "appSecret": "AxGOXPWhtmXS8wRcZ4caqhOv8Opmty7G"
+          },
+          "claude": {
+            "apiKey": "sk-0LJaQrbQ1Uiwyx92XLHYyA",
+            "baseUrl": "https://llm-developer.fzzixun.com",
+            "model": "claude-opus-4-7",
+            "maxTokens": 8192,
+            "historyLimit": 10
+          },
+          "behavior": { "memoryExtraction": true }
+        }
+      ]
+    }
+  ]
+}
